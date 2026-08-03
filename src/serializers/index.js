@@ -1,5 +1,5 @@
 const { toMajor } = require("../utils/money");
-const { BALANCE_STATUS } = require("../constants");
+const { BALANCE_STATUS, SPLIT_TYPES } = require("../constants");
 
 /**
  * Shapes domain documents into the API contract (docs/04-API-SPEC.md).
@@ -39,6 +39,16 @@ const toPublicMemberDTO = (member) => ({
   hasDevice: Boolean(member.deviceId),
 });
 
+/**
+ * Split inputs are stored as integers in a per-type unit (constants.SPLIT_VALUE_UNITS);
+ * they go out in the unit the user typed, which is the same unit the client sends back.
+ */
+const splitValueOut = (splitType, value, currency) => {
+  if (splitType === SPLIT_TYPES.EXACT) return toMajor(value, currency);
+  if (splitType === SPLIT_TYPES.PERCENTAGE) return value / 100;
+  return value;
+};
+
 const toExpenseDTO = (expense, memberNameById = new Map(), currency = "INR") => {
   const nameOf = (memberId) => memberNameById.get(id(memberId)) || "Unknown";
 
@@ -55,6 +65,10 @@ const toExpenseDTO = (expense, memberNameById = new Map(), currency = "INR") => 
       name: nameOf(share.memberId),
       amountMinor: share.amountMinor,
       amount: toMajor(share.amountMinor, currency),
+    })),
+    splitValues: (expense.splitValues || []).map((entry) => ({
+      memberId: id(entry.memberId),
+      value: splitValueOut(expense.splitType, entry.value, currency),
     })),
     participantCount: expense.shares.length,
     expenseDate: expense.expenseDate,

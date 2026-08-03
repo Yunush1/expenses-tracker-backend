@@ -8,11 +8,24 @@ const GROUP_STATUS = Object.freeze({
 
 const SPLIT_TYPES = Object.freeze({
   EQUAL: "EQUAL",
-  // Reserved — the shares[] model already supports these; only the calculator
-  // strategy and the UI are missing. See docs/05-ALGORITHMS.md §2.5.
   EXACT: "EXACT",
   PERCENTAGE: "PERCENTAGE",
   SHARES: "SHARES",
+});
+
+/**
+ * Every split type except EQUAL needs a per-participant input value. It is stored
+ * as an INTEGER whose unit depends on the split type, so the no-floats rule
+ * (docs/05-ALGORITHMS.md §1) holds for split inputs too:
+ *
+ *   EXACT       minor units      — ₹250.50 is stored as 25050
+ *   PERCENTAGE  hundredths of a percent — 33.33% is stored as 3333
+ *   SHARES      whole weights    — "2 shares" is stored as 2
+ */
+const SPLIT_VALUE_UNITS = Object.freeze({
+  [SPLIT_TYPES.EXACT]: "MINOR",
+  [SPLIT_TYPES.PERCENTAGE]: "CENTIPERCENT",
+  [SPLIT_TYPES.SHARES]: "WEIGHT",
 });
 
 const SETTLEMENT_METHODS = Object.freeze({
@@ -56,6 +69,14 @@ const LIMITS = Object.freeze({
   EXPENSE_DESC_MAX: 140,
   EXPENSE_NOTES_MAX: 500,
   SETTLEMENT_NOTE_MAX: 280,
+  /** Percentages carry 2 decimals, so 100% is 10 000 centipercent. */
+  PERCENT_TOTAL_CENTI: 10_000,
+  /**
+   * Caps `amountMinor * weight` well inside Number.MAX_SAFE_INTEGER: the largest
+   * expense is 1e9 minor units and 50 participants at weight 1000 total 50 000,
+   * so the widest product is 1e9 × 1000 = 1e12 — three orders of magnitude clear.
+   */
+  MAX_SHARE_WEIGHT: 1000,
 });
 
 const ERROR_CODES = Object.freeze({
@@ -63,6 +84,7 @@ const ERROR_CODES = Object.freeze({
   INVALID_AMOUNT: "INVALID_AMOUNT",
   INVALID_ID: "INVALID_ID",
   INVALID_PARTICIPANTS: "INVALID_PARTICIPANTS",
+  INVALID_SPLIT: "INVALID_SPLIT",
   SELF_SETTLEMENT: "SELF_SETTLEMENT",
   NOT_A_MEMBER: "NOT_A_MEMBER",
   CREATOR_ONLY: "CREATOR_ONLY",
@@ -86,6 +108,7 @@ const DEFAULT_CURRENCY = "INR";
 module.exports = {
   GROUP_STATUS,
   SPLIT_TYPES,
+  SPLIT_VALUE_UNITS,
   SETTLEMENT_METHODS,
   ACTIVITY_TYPES,
   BALANCE_STATUS,

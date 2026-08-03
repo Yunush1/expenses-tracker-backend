@@ -24,6 +24,34 @@ const shareSchema = new mongoose.Schema(
   { _id: false }
 );
 
+/**
+ * The per-participant input a non-equal split was built from — an exact amount, a
+ * percentage or a weight, always as an integer (see constants.SPLIT_VALUE_UNITS).
+ *
+ * Shares alone cannot be reversed back into this: 2:1:1 weights and 50/25/25 percent
+ * produce identical shares, and neither can be recovered from the rupee figures. It
+ * is stored so an edit that only touches the amount can re-derive the same split, and
+ * so the form can reopen showing what the user actually typed. Empty for EQUAL.
+ */
+const splitValueSchema = new mongoose.Schema(
+  {
+    memberId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Member",
+      required: true,
+    },
+    value: {
+      type: Number,
+      required: true,
+      validate: {
+        validator: Number.isInteger,
+        message: "Split value must be an integer",
+      },
+    },
+  },
+  { _id: false }
+);
+
 const expenseSchema = new mongoose.Schema(
   {
     groupId: {
@@ -70,6 +98,10 @@ const expenseSchema = new mongoose.Schema(
         validator: (shares) => shares.length > 0,
         message: "An expense needs at least one participant",
       },
+    },
+    splitValues: {
+      type: [splitValueSchema],
+      default: [],
     },
     expenseDate: {
       type: Date,

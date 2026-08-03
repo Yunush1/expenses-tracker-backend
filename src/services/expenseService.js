@@ -3,7 +3,11 @@ const memberRepository = require("../repositories/memberRepository");
 const expenseRepository = require("../repositories/expenseRepository");
 const memberService = require("./memberService");
 const activityService = require("./activityService");
-const { calculateShares, assertSharesBalance } = require("../utils/splitCalculator");
+const {
+  calculateShares,
+  assertSharesBalance,
+  normalizeSplitValues,
+} = require("../utils/splitCalculator");
 const { toMinor, formatMinor } = require("../utils/money");
 const { toExpenseDTO } = require("../serializers");
 const { buildPage } = require("../utils/cursor");
@@ -48,6 +52,13 @@ const resolveParticipants = async (group, paidBy, participantIds) => {
   return uniqueIds;
 };
 
+/** Stored split values → the plain `[{ memberId, value }]` the calculator expects. */
+const storedSplitValues = (expense) =>
+  (expense.splitValues || []).map((entry) => ({
+    memberId: String(entry.memberId),
+    value: entry.value,
+  }));
+
 const createExpense = async ({ group, actor, dto }) => {
   // Idempotency: a retried or double-tapped submit returns the original expense
   // rather than charging the group twice.
@@ -61,11 +72,20 @@ const createExpense = async ({ group, actor, dto }) => {
 
   const amountMinor = toMinor(dto.amount, group.currency);
   const participantIds = await resolveParticipants(group, dto.paidBy, dto.participantIds);
+  const splitType = dto.splitType || SPLIT_TYPES.EQUAL;
+
+  const splitValues = normalizeSplitValues({
+    splitType,
+    splitValues: dto.splitValues,
+    currency: group.currency,
+  });
 
   const shares = calculateShares({
-    splitType: dto.splitType || SPLIT_TYPES.EQUAL,
+    splitType,
     amountMinor,
     participantIds,
+    splitValues,
+    currency: group.currency,
   });
 
   // Belt and braces: the calculator already asserts this, and the model asserts it
@@ -78,8 +98,9 @@ const createExpense = async ({ group, actor, dto }) => {
     amountMinor,
     currencyCode: group.currency,
     paidBy: dto.paidBy,
-    splitType: dto.splitType || SPLIT_TYPES.EQUAL,
+    splitType,
     shares,
+    splitValues,
     expenseDate: dto.expenseDate || new Date(),
     notes: dto.notes || "",
     createdByMemberId: actor._id,
@@ -99,6 +120,7 @@ const createExpense = async ({ group, actor, dto }) => {
       amountMinor,
       paidByName: nameMap.get(String(expense.paidBy)) || "Unknown",
       participantCount: shares.length,
+      splitType,
     },
   });
 
@@ -130,11 +152,31 @@ const updateExpense = async ({ group, actor, expenseId, dto }) => {
     dto.participantIds ?? existing.shares.map((share) => String(share.memberId));
 
   const resolvedIds = await resolveParticipants(group, paidBy, participantIds);
+  const splitType = dto.splitType || existing.splitType;
+
+  /**
+   * An edit that leaves the split alone reuses the stored values, so changing only
+   * the amount re-derives the same 60/40 rather than demanding the user retype it.
+   * If the split type changed, or the client sent new values, they are re-normalized.
+   * Stored values that no longer cover the participant set are rejected by the
+   * calculator — which is the right answer: adding someone to a percentage split
+   * genuinely does require deciding their percentage.
+   */
+  const splitValues =
+    dto.splitValues === undefined && splitType === existing.splitType
+      ? storedSplitValues(existing)
+      : normalizeSplitValues({
+          splitType,
+          splitValues: dto.splitValues,
+          currency: group.currency,
+        });
 
   const shares = calculateShares({
-    splitType: dto.splitType || existing.splitType,
+    splitType,
     amountMinor,
     participantIds: resolvedIds,
+    splitValues,
+    currency: group.currency,
   });
 
   assertSharesBalance(shares, amountMinor);
@@ -153,8 +195,9 @@ const updateExpense = async ({ group, actor, expenseId, dto }) => {
         description: dto.description ?? existing.description,
         amountMinor,
         paidBy,
-        splitType: dto.splitType || existing.splitType,
+        splitType,
         shares,
+        splitValues,
         expenseDate: dto.expenseDate || existing.expenseDate,
         notes: dto.notes ?? existing.notes,
       },

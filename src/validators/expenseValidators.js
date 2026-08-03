@@ -15,12 +15,28 @@ const participantIds = z
   .min(1, "Select at least one participant")
   .max(LIMITS.MAX_PARTICIPANTS, `At most ${LIMITS.MAX_PARTICIPANTS} participants`);
 
+/**
+ * Shape only. What the numbers have to mean — percentages totalling 100, exact
+ * amounts totalling the expense, one value per participant — is enforced in
+ * splitCalculator, so create and update share a single set of rules.
+ */
+const splitValues = z
+  .array(
+    z.object({
+      memberId: objectId,
+      value: z.union([z.number(), z.string()]),
+    })
+  )
+  .max(LIMITS.MAX_PARTICIPANTS, `At most ${LIMITS.MAX_PARTICIPANTS} participants`)
+  .optional();
+
 const createExpenseSchema = z.object({
   description: trimmedString(LIMITS.EXPENSE_DESC_MAX, "Description"),
   amount,
   paidBy: objectId,
   participantIds,
   splitType: z.nativeEnum(SPLIT_TYPES).optional().default(SPLIT_TYPES.EQUAL),
+  splitValues,
   expenseDate,
   notes: z.string().trim().max(LIMITS.EXPENSE_NOTES_MAX).optional().default(""),
   clientRequestId,
@@ -32,6 +48,7 @@ const updateExpenseSchema = z.object({
   paidBy: objectId.optional(),
   participantIds: participantIds.optional(),
   splitType: z.nativeEnum(SPLIT_TYPES).optional(),
+  splitValues,
   expenseDate,
   notes: z.string().trim().max(LIMITS.EXPENSE_NOTES_MAX).optional(),
   // Required: an update must state the version it read, so a concurrent edit is
