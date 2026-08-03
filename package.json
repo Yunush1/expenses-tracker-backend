@@ -1,0 +1,36 @@
+{
+  "name": "expense-sharing-api",
+  "version": "1.0.0",
+  "description": "Billzer-like expense sharing platform API — groups, expenses, balances, minimum settlements. No auth.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "dev": "cross-env NODE_ENV=development nodemon server.js",
+    "start": "cross-env NODE_ENV=production node server.js",
+    "start:dev": "cross-env NODE_ENV=development node server.js",
+    "test": "node --test tests/",
+    "tunel": "cross-env NODE_ENV=development node server.js --tunel"
+  },
+  "keywords": [
+    "expense",
+    "split",
+    "settlement",
+    "billzer"
+  ],
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.1.0",
+    "mongoose": "^9.2.3",
+    "morgan": "^1.10.1",
+    "winston": "^3.19.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "cross-env": "^10.1.0",
+    "nodemon": "^3.1.14"
+  }
+}
