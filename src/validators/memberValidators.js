@@ -15,10 +15,25 @@ const memberParamsSchema = z.object({
   memberId: objectId,
 });
 
+/** Users paste codes with spaces, dashes and mixed case; normalising is not their job. */
+const linkDeviceSchema = z.object({
+  code: z
+    .string()
+    .trim()
+    .min(LIMITS.LINK_CODE_LENGTH, `Enter the ${LIMITS.LINK_CODE_LENGTH}-character device code`)
+    .max(24, "That is not a device code"),
+});
+
+const mergeMemberSchema = z.object({
+  intoMemberId: objectId,
+});
+
 module.exports = {
   joinGroupSchema: nameSchema,
   addMemberSchema: nameSchema,
   renameMemberSchema: nameSchema,
   claimMemberSchema,
+  linkDeviceSchema,
+  mergeMemberSchema,
   memberParamsSchema,
 };

@@ -8,6 +8,8 @@ const {
   addMemberSchema,
   renameMemberSchema,
   claimMemberSchema,
+  linkDeviceSchema,
+  mergeMemberSchema,
 } = require("../validators/memberValidators");
 
 // mergeParams so :inviteCode from the parent router stays visible here.
@@ -32,6 +34,26 @@ router.post(
   memberController.claimMember
 );
 
+// Issued on a device that is already this member's...
+router.post(
+  "/link-code",
+  writeLimiter,
+  requireActiveGroup,
+  requireMember,
+  memberController.createDeviceLinkCode
+);
+
+// ...and redeemed on one that is not, which is exactly why this cannot require a
+// member. The code is the proof; the rate limiter and its ten-minute, single-use
+// lifetime are what keep guessing impractical.
+router.post(
+  "/link",
+  writeLimiter,
+  requireActiveGroup,
+  validate(linkDeviceSchema),
+  memberController.linkDevice
+);
+
 router.post(
   "/",
   writeLimiter,
@@ -39,6 +61,16 @@ router.post(
   requireMember,
   validate(addMemberSchema),
   memberController.addMember
+);
+
+// Declared before "/:memberId" routes that could otherwise swallow it.
+router.post(
+  "/:memberId/merge",
+  writeLimiter,
+  requireActiveGroup,
+  requireMember,
+  validate(mergeMemberSchema),
+  memberController.mergeMembers
 );
 
 router.patch(

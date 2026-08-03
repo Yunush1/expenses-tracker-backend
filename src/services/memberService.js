@@ -3,9 +3,20 @@ const memberRepository = require("../repositories/memberRepository");
 const expenseRepository = require("../repositories/expenseRepository");
 const settlementRepository = require("../repositories/settlementRepository");
 const activityService = require("./activityService");
+const { withTransaction } = require("../config/db");
 const { toMemberDTO } = require("../serializers");
+const { generateLinkCode, hashLinkCode, normalizeLinkCode } = require("../utils/linkCode");
+const { remapExpense, remapSettlement, assertExpenseIntact } = require("../utils/memberMerge");
+const { formatMinor } = require("../utils/money");
 const { ACTIVITY_TYPES, LIMITS, ERROR_CODES } = require("../constants");
-const { NotFoundError, ConflictError, ForbiddenError } = require("../errors");
+const { NotFoundError, ConflictError, ForbiddenError, BadRequestError } = require("../errors");
+
+/** Devices live in `deviceIds[]`; the legacy scalar is still honoured pre-migration. */
+const devicesOf = (member) => {
+  const ids = new Set(member.deviceIds || []);
+  if (member.deviceId) ids.add(member.deviceId);
+  return [...ids];
+};
 
 const listMembers = async (group, currentMember) => {
   const members = await memberRepository.findByGroup(group._id);
@@ -33,7 +44,7 @@ const joinGroup = async ({ group, name, deviceId }) => {
   const member = await memberRepository.create({
     groupId: group._id,
     name,
-    deviceId: deviceId || null,
+    deviceIds: deviceId ? [deviceId] : [],
     isCreator: false,
     isActive: true,
   });
@@ -62,9 +73,11 @@ const claimMember = async ({ group, memberId, deviceId }) => {
     throw new NotFoundError("Member not found", ERROR_CODES.MEMBER_NOT_FOUND);
   }
 
-  if (member.deviceId && member.deviceId !== deviceId) {
+  const devices = devicesOf(member);
+
+  if (devices.length > 0 && !devices.includes(deviceId)) {
     throw new ConflictError(
-      `${member.name} is already linked to another device`,
+      `${member.name} is already in use on another device. Open Splitly there and use "Add another device" to get a link code.`,
       ERROR_CODES.ALREADY_CLAIMED
     );
   }
@@ -73,14 +86,121 @@ const claimMember = async ({ group, memberId, deviceId }) => {
   // to exactly one member and resolveMember stays unambiguous.
   const previous = await memberRepository.findByDevice(group._id, deviceId);
   if (previous && String(previous._id) !== String(member._id)) {
-    await memberRepository.updateById(group._id, previous._id, { $set: { deviceId: null } });
+    await memberRepository.removeDevice(group._id, previous._id, deviceId);
   }
 
-  const updated = await memberRepository.updateById(group._id, member._id, {
-    $set: { deviceId },
-  });
+  const updated = await memberRepository.addDevice(group._id, member._id, deviceId);
 
   return toMemberDTO(updated, updated._id);
+};
+
+/**
+ * Issues a code on a device that is already this member's, to be typed into one
+ * that is not.
+ *
+ * The alternative — letting any device claim any member — would make possession of
+ * the invite link enough to become someone else and rewrite their balances. So the
+ * proof required is possession of a device that is already trusted.
+ */
+const createDeviceLinkCode = async ({ group, actor }) => {
+  if (devicesOf(actor).length >= LIMITS.MAX_DEVICES_PER_MEMBER) {
+    throw new ConflictError(
+      `${actor.name} is already on ${LIMITS.MAX_DEVICES_PER_MEMBER} devices. Remove one before adding another.`,
+      ERROR_CODES.DEVICE_LIMIT_REACHED
+    );
+  }
+
+  const code = generateLinkCode();
+  const expiresAt = new Date(Date.now() + LIMITS.LINK_CODE_TTL_MS);
+
+  await memberRepository.setLinkCode(group._id, actor._id, hashLinkCode(group._id, code), expiresAt);
+
+  // Returned exactly once — only the hash is stored.
+  return { code, expiresAt, memberName: actor.name };
+};
+
+/**
+ * Redeems a code on the new device.
+ *
+ * Deliberately not behind `requireMember`: the whole point is that this browser is
+ * not yet anybody in this group.
+ */
+const linkDevice = async ({ group, deviceId, code }) => {
+  if (!deviceId) {
+    throw new BadRequestError("This browser has no device id", ERROR_CODES.VALIDATION_ERROR);
+  }
+
+  const member = await memberRepository.findByLinkCodeHash(group._id, hashLinkCode(group._id, code));
+
+  if (!member || !member.linkCode?.expiresAt || member.linkCode.expiresAt.getTime() < Date.now()) {
+    /**
+     * The group code and a device code are both short strings the UI calls a
+     * "code", so entering one where the other belongs is a design failure rather
+     * than a user error — and the generic message sends people off to regenerate
+     * a code that was never the problem. Name what actually happened.
+     */
+    if (group.joinCode && normalizeLinkCode(code) === group.joinCode) {
+      throw new BadRequestError(
+        `${group.joinCode} is the group code — it is how people find this group, and you have already found it. ` +
+          "To bring your existing name onto this device, open Splitly on the device that already has it, " +
+          'choose "Add another device", and type the device code it shows you.',
+        ERROR_CODES.INVALID_LINK_CODE
+      );
+    }
+
+    // One message for "wrong" and "expired": a code that has run out is still a
+    // code that should not confirm it ever existed.
+    throw new BadRequestError(
+      "That device code is wrong or has expired. Device codes last 10 minutes and work once — generate a fresh one on your other device.",
+      ERROR_CODES.INVALID_LINK_CODE
+    );
+  }
+
+  if (devicesOf(member).length >= LIMITS.MAX_DEVICES_PER_MEMBER) {
+    throw new ConflictError(
+      `${member.name} is already on ${LIMITS.MAX_DEVICES_PER_MEMBER} devices.`,
+      ERROR_CODES.DEVICE_LIMIT_REACHED
+    );
+  }
+
+  // This browser may already have joined as a duplicate person before linking.
+  const previous = await memberRepository.findByDevice(group._id, deviceId);
+  let mergeSuggestion = null;
+
+  if (previous && String(previous._id) !== String(member._id)) {
+    await memberRepository.removeDevice(group._id, previous._id, deviceId);
+
+    const [expenseCount, settlementCount] = await Promise.all([
+      expenseRepository.countInvolvingMember(group._id, previous._id),
+      settlementRepository.countInvolvingMember(group._id, previous._id),
+    ]);
+
+    if (expenseCount === 0 && settlementCount === 0) {
+      // An empty accidental join. Nothing of value is lost by retiring it.
+      await memberRepository.deactivate(group._id, previous._id);
+      await groupRepository.incrementMemberCount(group._id, -1);
+    } else {
+      // It has history, so it cannot just be dropped — offer the merge instead.
+      mergeSuggestion = {
+        memberId: String(previous._id),
+        name: previous.name,
+        expenseCount,
+        settlementCount,
+      };
+    }
+  }
+
+  const updated = await memberRepository.addDevice(group._id, member._id, deviceId);
+
+  await activityService.record({
+    groupId: group._id,
+    type: ACTIVITY_TYPES.DEVICE_LINKED,
+    actor: updated,
+    message: `${updated.name} linked another device`,
+    metadata: { memberId: String(updated._id), deviceCount: devicesOf(updated).length },
+  });
+
+  return { member: toMemberDTO(updated, updated._id), mergeSuggestion };
 };
 
 /** Manual add — someone who is not at the table yet, e.g. "Dad". */
@@ -185,6 +305,148 @@ const removeMember = async ({ group, actor, memberId }) => {
   return true;
 };
 
+/**
+ * Folds one member's entire history into another and retires the first.
+ *
+ * This is the repair for groups that already contain the same person several times
+ * over — the state a single `deviceId` per member used to produce. It moves money
+ * nowhere: every share, payer and settlement reference is rewritten, totals are
+ * asserted unchanged, and because balances are derived rather than stored they are
+ * simply correct on the next read.
+ */
+const mergeMembers = async ({ group, actor, sourceId, targetId }) => {
+  if (String(sourceId) === String(targetId)) {
+    throw new BadRequestError("Pick two different members to merge", ERROR_CODES.INVALID_MERGE);
+  }
+
+  const [source, target] = await Promise.all([
+    memberRepository.findById(group._id, sourceId),
+    memberRepository.findById(group._id, targetId),
+  ]);
+
+  if (!source || !target) {
+    throw new NotFoundError("Member not found", ERROR_CODES.MEMBER_NOT_FOUND);
+  }
+
+  if (!target.isActive) {
+    throw new ConflictError(
+      `${target.name} has been removed from this group — merge into an active member instead`,
+      ERROR_CODES.INVALID_MERGE
+    );
+  }
+
+  if (source.isCreator) {
+    throw new ConflictError(
+      `${source.name} created this group, so it has to be the one kept. Merge the other way round.`,
+      ERROR_CODES.INVALID_MERGE
+    );
+  }
+
+  // The creator moderates; otherwise you may only merge an identity that is your
+  // own, which is the case this exists for.
+  const actorId = String(actor._id);
+  const isOwnIdentity = actorId === String(source._id) || actorId === String(target._id);
+
+  if (!actor.isCreator && !isOwnIdentity) {
+    throw new ForbiddenError(
+      "Only the group creator can merge other people's identities",
+      ERROR_CODES.CREATOR_ONLY
+    );
+  }
+
+  const [expenses, settlements] = await Promise.all([
+    expenseRepository.listAllInvolvingMember(group._id, source._id),
+    settlementRepository.listAllInvolvingMember(group._id, source._id),
+  ]);
+
+  const removedSettlements = [];
+  let expensesReassigned = 0;
+  let expensesResplit = 0;
+  let settlementsReassigned = 0;
+
+  await withTransaction(async (session) => {
+    for (const expense of expenses) {
+      const { changed, resplit, patch } = remapExpense(expense, source._id, target._id);
+      if (!changed) continue;
+
+      // Throws rather than writing: an expense whose shares stopped adding up
+      // would be far worse than a merge that failed.
+      assertExpenseIntact(expense, patch);
+
+      await expenseRepository.applyMergePatch(group._id, expense._id, patch, session);
+      expensesReassigned += 1;
+      // Both identities were participants, so this expense was over-divided and
+      // everyone's share in it just changed. Worth telling the user about.
+      if (resplit) expensesResplit += 1;
+    }
+
+    for (const settlement of settlements) {
+      const result = remapSettlement(settlement, source._id, target._id);
+
+      if (result.action === "drop") {
+        removedSettlements.push({
+          amountMinor: settlement.amountMinor,
+          settledAt: settlement.settledAt,
+        });
+        await settlementRepository.deleteById(group._id, settlement._id, session);
+      } else if (result.action === "update") {
+        await settlementRepository.applyMergePatch(group._id, settlement._id, result.patch, session);
+        settlementsReassigned += 1;
+      }
+    }
+
+    // The devices come across, so whoever was signed in as the duplicate stays
+    // signed in — as the right person now.
+    for (const deviceId of devicesOf(source)) {
+      await memberRepository.addDevice(group._id, target._id, deviceId);
+    }
+
+    await memberRepository.updateById(group._id, source._id, {
+      $set: {
+        isActive: false,
+        deviceIds: [],
+        deviceId: null,
+        linkCode: { hash: null, expiresAt: null },
+      },
+    });
+  });
+
+  await groupRepository.incrementMemberCount(group._id, -1);
+
+  await activityService.record({
+    groupId: group._id,
+    type: ACTIVITY_TYPES.MEMBER_MERGED,
+    actor,
+    message: `${actor.name} merged ${source.name} into ${target.name}`,
+    metadata: {
+      fromMemberId: String(source._id),
+      fromName: source.name,
+      intoMemberId: String(target._id),
+      intoName: target.name,
+      expensesReassigned,
+      expensesResplit,
+      settlementsReassigned,
+      // Named individually, with amounts: the timeline has to stay truthful about
+      // records that were removed rather than reassigned.
+      settlementsRemoved: removedSettlements.map(
+        (entry) => `${formatMinor(entry.amountMinor, group.currency)} on ${new Date(entry.settledAt).toISOString().slice(0, 10)}`
+      ),
+    },
+  });
+
+  await groupRepository.touchActivity(group._id);
+
+  const merged = await memberRepository.findById(group._id, target._id);
+
+  return {
+    member: toMemberDTO(merged, actor._id),
+    expensesReassigned,
+    expensesResplit,
+    settlementsReassigned,
+    settlementsRemoved: removedSettlements.length,
+  };
+};
+
 /** Name lookup used by the expense/settlement serializers. */
 const buildNameMap = async (groupId) => {
   const members = await memberRepository.findByGroup(groupId, { includeInactive: true });
@@ -195,6 +457,9 @@ module.exports = {
   listMembers,
   joinGroup,
   claimMember,
+  createDeviceLinkCode,
+  linkDevice,
+  mergeMembers,
   addMember,
   renameMember,
   removeMember,

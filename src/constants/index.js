@@ -44,6 +44,8 @@ const ACTIVITY_TYPES = Object.freeze({
   MEMBER_ADDED: "MEMBER_ADDED",
   MEMBER_RENAMED: "MEMBER_RENAMED",
   MEMBER_REMOVED: "MEMBER_REMOVED",
+  MEMBER_MERGED: "MEMBER_MERGED",
+  DEVICE_LINKED: "DEVICE_LINKED",
   EXPENSE_ADDED: "EXPENSE_ADDED",
   EXPENSE_UPDATED: "EXPENSE_UPDATED",
   EXPENSE_DELETED: "EXPENSE_DELETED",
@@ -58,11 +60,26 @@ const BALANCE_STATUS = Object.freeze({
 
 const LIMITS = Object.freeze({
   MAX_MEMBERS_PER_GROUP: 50,
+  /** One person, several browsers. Bounded so a shared device cannot accumulate forever. */
+  MAX_DEVICES_PER_MEMBER: 8,
+  /** Typed by hand, so short — kept safe by a 10 minute TTL, single use and a try limit. */
+  LINK_CODE_LENGTH: 6,
+  LINK_CODE_TTL_MS: 10 * 60 * 1000,
+  LINK_CODE_MAX_ATTEMPTS: 5,
   MAX_PARTICIPANTS: 50,
   MAX_AMOUNT_MAJOR: 10_000_000,
   MAX_PAGE_SIZE: 50,
   DEFAULT_PAGE_SIZE: 20,
   INVITE_CODE_LENGTH: 16,
+  /**
+   * The short code people read out or type in, as opposed to the 16-char invite
+   * code that lives in a URL. 8 symbols from a 25-letter alphabet is ~37 bits —
+   * far less than the link's 96, which is why it is optional, revocable, and the
+   * only thing behind the strict lookup limiter. See docs/02-HLD.md §3.4.
+   */
+  JOIN_CODE_LENGTH: 8,
+  JOIN_CODE_MIN: 6,
+  JOIN_CODE_MAX: 12,
   GROUP_NAME_MAX: 80,
   GROUP_DESC_MAX: 500,
   MEMBER_NAME_MAX: 50,
@@ -88,6 +105,12 @@ const ERROR_CODES = Object.freeze({
   SELF_SETTLEMENT: "SELF_SETTLEMENT",
   NOT_A_MEMBER: "NOT_A_MEMBER",
   CREATOR_ONLY: "CREATOR_ONLY",
+  EXPENSE_OWNER_ONLY: "EXPENSE_OWNER_ONLY",
+  INVALID_LINK_CODE: "INVALID_LINK_CODE",
+  INVALID_JOIN_CODE: "INVALID_JOIN_CODE",
+  JOIN_CODE_TAKEN: "JOIN_CODE_TAKEN",
+  DEVICE_LIMIT_REACHED: "DEVICE_LIMIT_REACHED",
+  INVALID_MERGE: "INVALID_MERGE",
   GROUP_NOT_FOUND: "GROUP_NOT_FOUND",
   MEMBER_NOT_FOUND: "MEMBER_NOT_FOUND",
   EXPENSE_NOT_FOUND: "EXPENSE_NOT_FOUND",

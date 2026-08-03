@@ -25,4 +25,19 @@ const createGroupLimiter = build(
 
 const writeLimiter = build(15 * 60 * 1000, 120, "Too many changes. Please slow down.");
 
-module.exports = { globalLimiter, createGroupLimiter, writeLimiter };
+/**
+ * The strictest limit in the API, and the only one that is load-bearing rather
+ * than merely polite.
+ *
+ * An invite code is 96 bits and cannot be guessed. A join code is ~37 bits and
+ * could be, given attempts — so attempts are what we take away. Ten per quarter
+ * hour is generous for someone mistyping a code read aloud across a table, and
+ * useless for enumeration. See docs/02-HLD.md §3.4.
+ */
+const codeLookupLimiter = build(
+  15 * 60 * 1000,
+  10,
+  "Too many code attempts. Wait a few minutes, or use the invite link instead."
+);
+
+module.exports = { globalLimiter, createGroupLimiter, writeLimiter, codeLookupLimiter };

@@ -13,6 +13,11 @@ exports.createGroup = asyncHandler(async (req, res) => {
   return created(res, result, "Group created");
 });
 
+exports.lookupByJoinCode = asyncHandler(async (req, res) => {
+  const data = await groupService.lookupByJoinCode(req.query.code);
+  return ok(res, data);
+});
+
 exports.getPreview = asyncHandler(async (req, res) => {
   const data = await groupService.getPreview(req.group, req.member);
   return ok(res, data);

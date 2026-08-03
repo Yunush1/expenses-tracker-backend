@@ -14,6 +14,12 @@ const findById = (id) => Group.findById(id);
 
 const existsByInviteCode = (inviteCode) => Group.exists({ inviteCode });
 
+/** Deleted groups are excluded — a retired code should read as simply unknown. */
+const findByJoinCode = (joinCode) =>
+  Group.findOne({ joinCode, status: { $ne: GROUP_STATUS.DELETED } });
+
+const existsByJoinCode = (joinCode) => Group.exists({ joinCode });
+
 const updateById = (id, update) => Group.findByIdAndUpdate(id, update, { new: true, runValidators: true });
 
 const incrementMemberCount = (id, delta, session = null) =>
@@ -36,6 +42,8 @@ module.exports = {
   findByInviteCode,
   findById,
   existsByInviteCode,
+  findByJoinCode,
+  existsByJoinCode,
   updateById,
   incrementMemberCount,
   touchActivity,

@@ -5,9 +5,10 @@ const memberRepository = require("../repositories/memberRepository");
 const activityService = require("./activityService");
 const balanceService = require("./balanceService");
 const { generateInviteCode } = require("../utils/inviteCode");
+const { generateJoinCode, normalizeJoinCode, isValidJoinCode } = require("../utils/joinCode");
 const { toGroupDTO, toMemberDTO, toPublicMemberDTO, toBalanceDTO } = require("../serializers");
-const { ACTIVITY_TYPES, GROUP_STATUS, DEFAULT_CURRENCY, ERROR_CODES } = require("../constants");
-const { ApiError, ConflictError } = require("../errors");
+const { ACTIVITY_TYPES, GROUP_STATUS, DEFAULT_CURRENCY, ERROR_CODES, LIMITS } = require("../constants");
+const { ApiError, ConflictError, BadRequestError, NotFoundError } = require("../errors");
 const logger = require("../utils/logger");
 
 const buildInviteUrl = (inviteCode) => `${config.appBaseUrl}/join/${inviteCode}`;
@@ -23,8 +24,80 @@ const allocateInviteCode = async (attempts = 3) => {
   throw new ApiError("Could not allocate an invite code", 500, ERROR_CODES.INTERNAL_ERROR);
 };
 
-const createGroup = async ({ name, description, creatorName, deviceId, currency }) => {
+/**
+ * Resolves the join code a group should be created with.
+ *
+ * `null` means the caller explicitly wants none — link only. A supplied code is
+ * validated and checked for collisions; anything else gets a generated one, which
+ * is the default because a group nobody can type their way into is the very thing
+ * this was added to fix.
+ */
+const resolveJoinCode = async (requested, { allowNull = true } = {}) => {
+  if (requested === null && allowNull) return null;
+
+  if (requested !== undefined && requested !== null && String(requested).trim() !== "") {
+    const normalized = normalizeJoinCode(requested);
+
+    if (!isValidJoinCode(normalized)) {
+      throw new BadRequestError(
+        `A code needs ${LIMITS.JOIN_CODE_MIN}–${LIMITS.JOIN_CODE_MAX} letters or numbers. ` +
+          "Spaces and dashes are fine — they are ignored.",
+        ERROR_CODES.INVALID_JOIN_CODE
+      );
+    }
+
+    if (await groupRepository.existsByJoinCode(normalized)) {
+      throw new ConflictError(
+        `The code ${normalized} is already taken. Try another.`,
+        ERROR_CODES.JOIN_CODE_TAKEN
+      );
+    }
+
+    return normalized;
+  }
+
+  return allocateJoinCode();
+};
+
+/** Same retry-on-collision shape as the invite code, but far likelier to collide. */
+const allocateJoinCode = async (attempts = 5) => {
+  for (let i = 0; i < attempts; i += 1) {
+    const code = generateJoinCode();
+    // eslint-disable-next-line no-await-in-loop -- sequential by nature
+    if (!(await groupRepository.existsByJoinCode(code))) return code;
+    logger.warn("[groupService] Join code collision, retrying");
+  }
+  throw new ApiError("Could not allocate a join code", 500, ERROR_CODES.INTERNAL_ERROR);
+};
+
+/**
+ * Short code → invite code. The one place a group can be reached without its link,
+ * which is why the route carries a much stricter rate limit than anything else.
+ *
+ * A wrong code and a deleted group are reported identically: neither should confirm
+ * that some other group exists.
+ */
+const lookupByJoinCode = async (code) => {
+  const normalized = normalizeJoinCode(code);
+
+  if (!isValidJoinCode(normalized)) {
+    throw new NotFoundError("No group found with that code", ERROR_CODES.GROUP_NOT_FOUND);
+  }
+
+  const group = await groupRepository.findByJoinCode(normalized);
+
+  if (!group) {
+    throw new NotFoundError("No group found with that code", ERROR_CODES.GROUP_NOT_FOUND);
+  }
+
+  // Only the handle — the caller then goes through the normal preview and join
+  // flow, so this adds no way to read a group that the link would not also give.
+  return { inviteCode: group.inviteCode };
+};
+
+const createGroup = async ({ name, description, creatorName, deviceId, currency, joinCode }) => {
   const inviteCode = await allocateInviteCode();
+  const resolvedJoinCode = await resolveJoinCode(joinCode);
 
   const result = await withTransaction(async (session) => {
     const group = await groupRepository.create(
@@ -32,6 +105,7 @@ const createGroup = async ({ name, description, creatorName, deviceId, currency 
         name,
         description: description || "",
         inviteCode,
+        joinCode: resolvedJoinCode,
         currency: currency || DEFAULT_CURRENCY,
         createdByDeviceId: deviceId || null,
         memberCount: 1,
@@ -46,7 +120,7 @@ const createGroup = async ({ name, description, creatorName, deviceId, currency 
         {
           groupId: group._id,
           name: creatorName,
-          deviceId: deviceId || null,
+          deviceIds: deviceId ? [deviceId] : [],
           isCreator: true,
           isActive: true,
         },
@@ -136,10 +210,31 @@ const getSummary = async (group, currentMember) => {
   };
 };
 
-const updateGroup = async ({ group, actor, name, description }) => {
+const updateGroup = async ({ group, actor, name, description, joinCode }) => {
   const update = {};
   if (name !== undefined) update.name = name;
   if (description !== undefined) update.description = description;
+
+  /**
+   * `joinCode` is three requests in one field, which is what makes it revocable:
+   *   null / ""  → turn the short code off; the link becomes the only way in
+   *   "REGENERATE" → replace it, invalidating whatever was shared before
+   *   anything else → set that exact code, if it is free
+   */
+  let joinCodeChange = null;
+
+  if (joinCode !== undefined) {
+    if (joinCode === null || String(joinCode).trim() === "") {
+      update.joinCode = null;
+      joinCodeChange = "removed";
+    } else if (String(joinCode).trim().toUpperCase() === "REGENERATE") {
+      update.joinCode = await allocateJoinCode();
+      joinCodeChange = "regenerated";
+    } else if (normalizeJoinCode(joinCode) !== group.joinCode) {
+      update.joinCode = await resolveJoinCode(joinCode, { allowNull: false });
+      joinCodeChange = "changed";
+    }
+  }
 
   if (Object.keys(update).length === 0) {
     return toGroupDTO(group);
@@ -152,8 +247,12 @@ const updateGroup = async ({ group, actor, name, description }) => {
     groupId: group._id,
     type: ACTIVITY_TYPES.GROUP_UPDATED,
     actor,
-    message: `${actor.name} updated the group details`,
-    metadata: { name: updated.name },
+    message: joinCodeChange
+      ? `${actor.name} ${joinCodeChange} the group's join code`
+      : `${actor.name} updated the group details`,
+    // Never the code itself — the activity feed is readable by every member and a
+    // retired code should not stay legible in it.
+    metadata: { name: updated.name, joinCodeChange },
   });
 
   return toGroupDTO(updated);
@@ -188,6 +287,7 @@ module.exports = {
   createGroup,
   getPreview,
   getSummary,
+  lookupByJoinCode,
   updateGroup,
   archiveGroup,
   deleteGroup,

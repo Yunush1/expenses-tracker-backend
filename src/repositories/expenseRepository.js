@@ -46,6 +46,35 @@ const softDelete = (groupId, expenseId, deletedByMemberId) =>
     { new: true }
   );
 
+/**
+ * Every expense referencing a member, deleted ones included — a merge has to rewrite
+ * soft-deleted rows too or the audit trail would still point at an identity that no
+ * longer exists.
+ */
+const listAllInvolvingMember = (groupId, memberId) =>
+  Expense.find({
+    groupId,
+    $or: [
+      { paidBy: memberId },
+      { createdByMemberId: memberId },
+      { deletedByMemberId: memberId },
+      { "shares.memberId": memberId },
+      { "splitValues.memberId": memberId },
+    ],
+  }).lean();
+
+/**
+ * Used only by the merge, which rewrites member references without touching money.
+ * Bumps `version` so a client holding the pre-merge copy is told to reload rather
+ * than overwriting the reassigned shares.
+ */
+const applyMergePatch = (groupId, expenseId, patch, session = null) =>
+  Expense.updateOne(
+    { _id: expenseId, groupId },
+    { $set: patch, $inc: { version: 1 } },
+    session ? { session } : undefined
+  );
+
 const countByGroup = (groupId) => Expense.countDocuments({ groupId, isDeleted: false });
 
 /** Counts non-deleted expenses a member is involved in, as payer or participant. */
@@ -87,6 +116,8 @@ module.exports = {
   listByGroup,
   updateById,
   softDelete,
+  listAllInvolvingMember,
+  applyMergePatch,
   countByGroup,
   countInvolvingMember,
   aggregateTotals,

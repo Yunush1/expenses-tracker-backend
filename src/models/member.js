@@ -16,12 +16,36 @@ const memberSchema = new mongoose.Schema(
       maxlength: LIMITS.MEMBER_NAME_MAX,
     },
     /**
-     * Links a browser to this member. Null for members added manually by someone
-     * else — those can be claimed later via the invite link.
+     * Every browser this person uses. One human with a phone, a laptop and a work
+     * machine is one member with three device ids — not three members, which is
+     * what a single `deviceId` produced: three sets of balances, and a settlement
+     * engine cheerfully suggesting they pay themselves.
+     *
+     * Devices are added by the link-code flow (see memberService.linkDevice), never
+     * by simply presenting an unknown id, or possession of the invite link would be
+     * enough to impersonate anyone in the group.
+     */
+    deviceIds: {
+      type: [String],
+      default: [],
+    },
+    /**
+     * @deprecated Superseded by `deviceIds[]`. Still read by memberRepository so
+     * documents written before the migration keep resolving; cleared by
+     * `npm run migrate:devices`.
      */
     deviceId: {
       type: String,
       default: null,
+    },
+    /**
+     * A short code shown on a device that is already linked, typed into one that is
+     * not. Stored as a hash so a database dump does not hand out identities, and
+     * short-lived because it is read off one screen and typed into another.
+     */
+    linkCode: {
+      hash: { type: String, default: null },
+      expiresAt: { type: Date, default: null },
     },
     isCreator: {
       type: Boolean,
@@ -46,7 +70,11 @@ const memberSchema = new mongoose.Schema(
 );
 
 memberSchema.index({ groupId: 1, isActive: 1 });
+memberSchema.index({ groupId: 1, deviceIds: 1 });
+// Retained for the legacy half of the findByDevice lookup until the migration has
+// run everywhere.
 memberSchema.index({ groupId: 1, deviceId: 1 });
+memberSchema.index({ groupId: 1, "linkCode.hash": 1 });
 
 // Member names are intentionally NOT unique — two people called "Rahul" is a real
 // scenario, and rejecting it would be worse than showing both.

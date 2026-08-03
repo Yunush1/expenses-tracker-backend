@@ -12,7 +12,31 @@ const { toMinor, formatMinor } = require("../utils/money");
 const { toExpenseDTO } = require("../serializers");
 const { buildPage } = require("../utils/cursor");
 const { ACTIVITY_TYPES, LIMITS, SPLIT_TYPES, ERROR_CODES } = require("../constants");
-const { BadRequestError, NotFoundError, ConflictError } = require("../errors");
+const { BadRequestError, NotFoundError, ConflictError, ForbiddenError } = require("../errors");
+
+/**
+ * Changing an expense is restricted to the member who recorded it, plus the group
+ * creator acting as moderator.
+ *
+ * Without this rule, holding the invite link is permission to rewrite anyone's
+ * numbers: one member logs ₹100 of groceries, another quietly makes it ₹70, and
+ * both their balances move. The activity log would record it, but only after the
+ * fact — and a balance the payer never agreed to is exactly the disagreement this
+ * app exists to prevent.
+ *
+ * The creator keeps an override because the author may have lost their device or
+ * left the group, and an expense nobody can correct is its own kind of broken.
+ */
+const assertCanModify = (expense, actor) => {
+  const isAuthor = String(expense.createdByMemberId) === String(actor._id);
+
+  if (!isAuthor && !actor.isCreator) {
+    throw new ForbiddenError(
+      "Only the member who added this expense can change it. Ask them, or ask the group creator.",
+      ERROR_CODES.EXPENSE_OWNER_ONLY
+    );
+  }
+};
 
 /**
  * Validates that the payer and every participant is a live member of this group.
@@ -136,6 +160,8 @@ const updateExpense = async ({ group, actor, expenseId, dto }) => {
     throw new NotFoundError("Expense not found", ERROR_CODES.EXPENSE_NOT_FOUND);
   }
 
+  assertCanModify(existing, actor);
+
   if (existing.version !== dto.version) {
     throw new ConflictError(
       "This expense was changed by someone else. Reload and try again.",
@@ -240,6 +266,16 @@ const updateExpense = async ({ group, actor, expenseId, dto }) => {
 
 /** Soft delete — dropped from balances immediately, retained in the timeline. */
 const deleteExpense = async ({ group, actor, expenseId }) => {
+  // Loaded before deleting rather than deleting conditionally: the caller needs to
+  // be told "you may not" separately from "it isn't there".
+  const existing = await expenseRepository.findById(group._id, expenseId);
+
+  if (!existing) {
+    throw new NotFoundError("Expense not found", ERROR_CODES.EXPENSE_NOT_FOUND);
+  }
+
+  assertCanModify(existing, actor);
+
   const deleted = await expenseRepository.softDelete(group._id, expenseId, actor._id);
 
   if (!deleted) {
@@ -289,4 +325,12 @@ const getExpense = async (group, expenseId) => {
   return toExpenseDTO(expense, nameMap, group.currency);
 };
 
-module.exports = { createExpense, updateExpense, deleteExpense, listExpenses, getExpense };
+module.exports = {
+  createExpense,
+  updateExpense,
+  deleteExpense,
+  listExpenses,
+  getExpense,
+  // Exported for tests: it is the rule that decides whose numbers can be changed.
+  assertCanModify,
+};

@@ -16,6 +16,9 @@ const toGroupDTO = (group) => ({
   name: group.name,
   description: group.description || "",
   inviteCode: group.inviteCode,
+  // Null when the creator has turned it off, in which case the link is the only
+  // way in. Visible to every member — sharing it is the point.
+  joinCode: group.joinCode || null,
   currency: group.currency,
   status: group.status,
   memberCount: group.memberCount,
@@ -23,20 +26,34 @@ const toGroupDTO = (group) => ({
   lastActivityAt: group.lastActivityAt,
 });
 
-const toMemberDTO = (member, currentMemberId = null) => ({
-  id: id(member._id),
-  name: member.name,
-  isCreator: Boolean(member.isCreator),
-  isActive: member.isActive !== false,
-  hasDevice: Boolean(member.deviceId),
-  isYou: currentMemberId != null && id(member._id) === id(currentMemberId),
-  joinedAt: member.joinedAt,
-});
+/** Counts both the array and the pre-migration scalar. See models/member.js. */
+const deviceCountOf = (member) => {
+  const ids = new Set(member.deviceIds || []);
+  if (member.deviceId) ids.add(member.deviceId);
+  return ids.size;
+};
+
+const toMemberDTO = (member, currentMemberId = null) => {
+  const deviceCount = deviceCountOf(member);
+
+  return {
+    id: id(member._id),
+    name: member.name,
+    isCreator: Boolean(member.isCreator),
+    isActive: member.isActive !== false,
+    hasDevice: deviceCount > 0,
+    // Lets the UI show "on 3 devices" and offer to link another. Never the ids
+    // themselves — those are the credential.
+    deviceCount,
+    isYou: currentMemberId != null && id(member._id) === id(currentMemberId),
+    joinedAt: member.joinedAt,
+  };
+};
 
 const toPublicMemberDTO = (member) => ({
   id: id(member._id),
   name: member.name,
-  hasDevice: Boolean(member.deviceId),
+  hasDevice: deviceCountOf(member) > 0,
 });
 
 /**

@@ -31,6 +31,36 @@ exports.claimMember = asyncHandler(async (req, res) => {
   return ok(res, { member }, "Identity claimed");
 });
 
+exports.createDeviceLinkCode = asyncHandler(async (req, res) => {
+  const payload = await memberService.createDeviceLinkCode({
+    group: req.group,
+    actor: req.member,
+  });
+
+  return created(res, payload, "Link code created");
+});
+
+exports.linkDevice = asyncHandler(async (req, res) => {
+  const payload = await memberService.linkDevice({
+    group: req.group,
+    deviceId: req.deviceId,
+    code: req.body.code,
+  });
+
+  return ok(res, payload, "Device linked");
+});
+
+exports.mergeMembers = asyncHandler(async (req, res) => {
+  const payload = await memberService.mergeMembers({
+    group: req.group,
+    actor: req.member,
+    sourceId: req.params.memberId,
+    targetId: req.body.intoMemberId,
+  });
+
+  return ok(res, payload, "Members merged");
+});
+
 exports.addMember = asyncHandler(async (req, res) => {
   const member = await memberService.addMember({
     group: req.group,

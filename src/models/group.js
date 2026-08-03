@@ -21,6 +21,18 @@ const groupSchema = new mongoose.Schema(
       required: true,
       unique: true,
     },
+    /**
+     * Optional short code for joining without the link — typed in, or read aloud.
+     *
+     * Weaker than `inviteCode` by design (~37 bits against 96), so it is nullable,
+     * revocable by the creator, and its lookup is the one route behind the strict
+     * limiter. A group with no join code is reachable only by its link.
+     */
+    joinCode: {
+      type: String,
+      default: null,
+      uppercase: true,
+    },
     currency: {
       type: String,
       default: DEFAULT_CURRENCY,
@@ -54,5 +66,12 @@ const groupSchema = new mongoose.Schema(
 );
 
 groupSchema.index({ status: 1, lastActivityAt: -1 });
+// Partial, not sparse — same reasoning as the expense clientRequestId index: the
+// field defaults to null, and a sparse unique index would reject every group after
+// the first one created without a join code.
+groupSchema.index(
+  { joinCode: 1 },
+  { unique: true, partialFilterExpression: { joinCode: { $type: "string" } } }
+);
 
 module.exports = mongoose.model("Group", groupSchema);
