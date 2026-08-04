@@ -56,6 +56,32 @@ const updateExpenseSchema = z.object({
   version: z.coerce.number().int().min(0),
 });
 
+/**
+ * Several expenses entered in one go — one shop trip, one receipt, several lines.
+ * The payer and date are stated once because that is what makes the entry quick;
+ * everything else is per item, so each line can be split differently.
+ */
+const createExpenseBatchSchema = z.object({
+  paidBy: objectId,
+  expenseDate,
+  items: z
+    .array(
+      z.object({
+        description: trimmedString(LIMITS.EXPENSE_DESC_MAX, "Description"),
+        amount,
+        participantIds,
+        splitType: z.nativeEnum(SPLIT_TYPES).optional().default(SPLIT_TYPES.EQUAL),
+        splitValues,
+        notes: z.string().trim().max(LIMITS.EXPENSE_NOTES_MAX).optional().default(""),
+        // One key per item, not per request: a retry must not turn three items
+        // into six, and the items are independent records on the server.
+        clientRequestId,
+      })
+    )
+    .min(1, "Add at least one item")
+    .max(LIMITS.MAX_BATCH_ITEMS, `At most ${LIMITS.MAX_BATCH_ITEMS} items at a time`),
+});
+
 const expenseParamsSchema = z.object({
   inviteCode: z.string().min(8).max(32),
   expenseId: objectId,
@@ -67,6 +93,7 @@ const listExpensesQuery = paginationQuery.extend({
 
 module.exports = {
   createExpenseSchema,
+  createExpenseBatchSchema,
   updateExpenseSchema,
   expenseParamsSchema,
   listExpensesQuery,

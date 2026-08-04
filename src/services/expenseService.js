@@ -1,3 +1,4 @@
+const { withTransaction } = require("../config/db");
 const groupRepository = require("../repositories/groupRepository");
 const memberRepository = require("../repositories/memberRepository");
 const expenseRepository = require("../repositories/expenseRepository");
@@ -151,6 +152,124 @@ const createExpense = async ({ group, actor, dto }) => {
   await groupRepository.touchActivity(group._id);
 
   return { expense: toExpenseDTO(expense, nameMap, group.currency), created: true };
+};
+
+/**
+ * Several expenses in one submission — a shop run with four lines, entered once
+ * with one payer instead of four times over.
+ *
+ * Everything is validated and every split computed **before the first write**. The
+ * failures that actually happen here are input failures — a removed member, an
+ * amount with three decimals, percentages that miss 100 — and discovering the
+ * fourth one after three rows are already in the ledger would leave the user to
+ * work out which half landed. On a replica set the writes are additionally wrapped
+ * in a transaction; on a standalone mongod, validate-first is the guarantee.
+ */
+const createExpenseBatch = async ({ group, actor, dto }) => {
+  const { paidBy, expenseDate, items } = dto;
+  const date = expenseDate || new Date();
+
+  const prepared = [];
+
+  for (const item of items) {
+    // Sequential rather than Promise.all: the first bad row should report itself,
+    // and a batch is at most 20 items.
+    // eslint-disable-next-line no-await-in-loop
+    const existing = item.clientRequestId
+      ? await expenseRepository.findByClientRequestId(group._id, item.clientRequestId)
+      : null;
+
+    // A retried batch must not double-charge. Items already recorded are carried
+    // through untouched so the response still describes the whole submission.
+    if (existing) {
+      prepared.push({ existing });
+      continue;
+    }
+
+    const amountMinor = toMinor(item.amount, group.currency);
+    // eslint-disable-next-line no-await-in-loop
+    const participantIds = await resolveParticipants(group, paidBy, item.participantIds);
+    const splitType = item.splitType || SPLIT_TYPES.EQUAL;
+
+    const splitValues = normalizeSplitValues({
+      splitType,
+      splitValues: item.splitValues,
+      currency: group.currency,
+    });
+
+    const shares = calculateShares({
+      splitType,
+      amountMinor,
+      participantIds,
+      splitValues,
+      currency: group.currency,
+    });
+
+    assertSharesBalance(shares, amountMinor);
+
+    prepared.push({
+      doc: {
+        groupId: group._id,
+        description: item.description,
+        amountMinor,
+        currencyCode: group.currency,
+        paidBy,
+        splitType,
+        shares,
+        splitValues,
+        expenseDate: date,
+        notes: item.notes || "",
+        createdByMemberId: actor._id,
+        clientRequestId: item.clientRequestId || null,
+        version: 0,
+      },
+    });
+  }
+
+  const written = await withTransaction(async (session) => {
+    const created = [];
+    for (const entry of prepared) {
+      if (entry.existing) {
+        created.push(entry.existing);
+        continue;
+      }
+      // eslint-disable-next-line no-await-in-loop -- ordered, and bounded at 20
+      created.push(await expenseRepository.create(entry.doc, session));
+    }
+    return created;
+  });
+
+  const nameMap = await memberService.buildNameMap(group._id);
+  const newCount = prepared.filter((entry) => !entry.existing).length;
+  const totalMinor = written.reduce((sum, expense) => sum + expense.amountMinor, 0);
+
+  // One entry, not one per item: a five-line shop run is a single thing the user
+  // did, and five near-identical rows would bury the rest of the timeline.
+  if (newCount > 0) {
+    await activityService.record({
+      groupId: group._id,
+      type: ACTIVITY_TYPES.EXPENSE_ADDED,
+      actor,
+      message: `${actor.name} added ${newCount} item${newCount === 1 ? "" : "s"} — ${formatMinor(
+        totalMinor,
+        group.currency
+      )}`,
+      metadata: {
+        itemCount: newCount,
+        totalMinor,
+        paidByName: nameMap.get(String(paidBy)) || "Unknown",
+        descriptions: written.map((expense) => expense.description).slice(0, 10),
+      },
+    });
+
+    await groupRepository.touchActivity(group._id);
+  }
+
+  return {
+    expenses: written.map((expense) => toExpenseDTO(expense, nameMap, group.currency)),
+    created: newCount,
+    totalMinor,
+  };
 };
 
 const updateExpense = async ({ group, actor, expenseId, dto }) => {
@@ -327,6 +446,7 @@ const getExpense = async (group, expenseId) => {
 
 module.exports = {
   createExpense,
+  createExpenseBatch,
   updateExpense,
   deleteExpense,
   listExpenses,

@@ -2,7 +2,10 @@ const mongoose = require("mongoose");
 const Expense = require("../models/expense");
 const { decodeCursor } = require("../utils/cursor");
 
-const create = (payload) => Expense.create(payload);
+const create = (payload, session = null) =>
+  Expense.create(session ? [payload] : payload, session ? { session } : undefined).then((res) =>
+    Array.isArray(res) ? res[0] : res
+  );
 
 const findById = (groupId, expenseId) =>
   Expense.findOne({ _id: expenseId, groupId, isDeleted: false });

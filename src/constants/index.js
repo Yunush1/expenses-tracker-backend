@@ -69,6 +69,8 @@ const LIMITS = Object.freeze({
   MAX_PARTICIPANTS: 50,
   MAX_AMOUNT_MAJOR: 10_000_000,
   MAX_PAGE_SIZE: 50,
+  /** One receipt's worth of lines. Bounded so a batch stays a single quick write. */
+  MAX_BATCH_ITEMS: 20,
   DEFAULT_PAGE_SIZE: 20,
   INVITE_CODE_LENGTH: 16,
   /**

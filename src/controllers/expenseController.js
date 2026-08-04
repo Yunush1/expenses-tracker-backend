@@ -26,6 +26,16 @@ exports.createExpense = asyncHandler(async (req, res) => {
     : ok(res, { expense }, "Expense already recorded");
 });
 
+exports.createExpenseBatch = asyncHandler(async (req, res) => {
+  const result = await expenseService.createExpenseBatch({
+    group: req.group,
+    actor: req.member,
+    dto: req.body,
+  });
+
+  return created(res, result, `${result.created} item(s) added`);
+});
+
 exports.updateExpense = asyncHandler(async (req, res) => {
   const expense = await expenseService.updateExpense({
     group: req.group,

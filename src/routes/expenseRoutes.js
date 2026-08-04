@@ -5,6 +5,7 @@ const { writeLimiter } = require("../middlewares/rateLimiter");
 const { requireMember, requireActiveGroup } = require("../middlewares/groupAccess");
 const {
   createExpenseSchema,
+  createExpenseBatchSchema,
   updateExpenseSchema,
   listExpensesQuery,
 } = require("../validators/expenseValidators");
@@ -21,6 +22,16 @@ router.post(
   requireMember,
   validate(createExpenseSchema),
   expenseController.createExpense
+);
+
+// Declared before "/:expenseId" so the literal path is not captured as an id.
+router.post(
+  "/batch",
+  writeLimiter,
+  requireActiveGroup,
+  requireMember,
+  validate(createExpenseBatchSchema),
+  expenseController.createExpenseBatch
 );
 
 router.patch(
