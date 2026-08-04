@@ -40,6 +40,17 @@ const config = Object.freeze({
   mongoUri: process.env.MONGO_URI,
   clientUrls: parseOrigins(process.env.CLIENT_URLS),
   appBaseUrl: (process.env.APP_BASE_URL || "http://localhost:5173").replace(/\/+$/, ""),
+
+  /**
+   * Deliberately NOT in REQUIRED. Push is an enhancement: an unconfigured
+   * deployment should serve a working expense tracker that sends no
+   * notifications, not refuse to start. See config/firebase.js.
+   */
+  firebase: Object.freeze({
+    projectId: (process.env.FIREBASE_PROJECT_ID || "").trim(),
+    clientEmail: (process.env.FIREBASE_CLIENT_EMAIL || "").trim(),
+    privateKey: process.env.FIREBASE_PRIVATE_KEY || "",
+  }),
 });
 
 module.exports = config;

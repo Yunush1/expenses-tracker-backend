@@ -2,11 +2,16 @@ const config = require("./src/config/env");
 const logger = require("./src/utils/logger");
 const app = require("./src/app");
 const { connectDB } = require("./src/config/db");
+const { initFirebase } = require("./src/config/firebase");
 
 logger.info(`[server] Starting in ${config.env} mode`);
 
 const start = async () => {
   await connectDB();
+
+  // After the database, before the listener: push is optional, so this logs what
+  // it did and never blocks the boot (see config/firebase.js).
+  initFirebase();
 
   const server = app.listen(config.port, () => {
     logger.info(`[server] Listening on port ${config.port}`);
