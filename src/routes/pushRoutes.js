@@ -3,7 +3,7 @@ const express = require("express");
 const pushController = require("../controllers/pushController");
 const validate = require("../middlewares/validate");
 const { writeLimiter } = require("../middlewares/rateLimiter");
-const { registerTokenSchema } = require("../validators/pushValidators");
+const { registerTokenSchema, preferencesSchema } = require("../validators/pushValidators");
 
 const router = express.Router();
 
@@ -18,5 +18,19 @@ router.get("/status", pushController.getStatus);
 router.post("/token", writeLimiter, validate(registerTokenSchema), pushController.registerToken);
 
 router.delete("/token", writeLimiter, pushController.unregisterToken);
+
+/**
+ * The evening reminder, switched independently of expense alerts — so someone can
+ * silence the nag without blocking the site, which would take the useful
+ * notifications with it.
+ */
+router.get("/preferences", pushController.getPreferences);
+
+router.patch(
+  "/preferences",
+  writeLimiter,
+  validate(preferencesSchema),
+  pushController.updatePreferences
+);
 
 module.exports = router;

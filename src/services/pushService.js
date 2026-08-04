@@ -180,10 +180,50 @@ const notifyActivity = async (activity, actor) => {
   }
 };
 
-/** Register or refresh one browser's token. */
-const registerToken = ({ deviceId, token, userAgent }) =>
-  pushTokenRepository.upsert({ deviceId, token, userAgent });
+/**
+ * Register or refresh one browser's token.
+ *
+ * The reminder's next due-time is computed here, at registration, rather than
+ * discovered by the scheduler scanning everybody. Required lazily: this module is
+ * loaded by activityService, and dailyNudgeService loads pushTokenRepository, so
+ * a top-level require would close a cycle.
+ */
+const registerToken = ({ deviceId, token, userAgent, timeZone }) => {
+  // eslint-disable-next-line global-require -- see above
+  const { computeNextNudgeAt } = require("./dailyNudgeService");
+
+  return pushTokenRepository.upsert({
+    deviceId,
+    token,
+    userAgent,
+    timeZone,
+    nextNudgeAt: computeNextNudgeAt(deviceId, timeZone),
+  });
+};
 
 const unregisterDevice = (deviceId) => pushTokenRepository.removeByDeviceId(deviceId);
 
-module.exports = { notifyActivity, registerToken, unregisterDevice, NOTIFIABLE };
+/** What this device has switched on. Unregistered devices report the defaults. */
+const getPreferences = async (deviceId) => {
+  const row = await pushTokenRepository.findByDeviceId(deviceId);
+  return {
+    registered: Boolean(row),
+    // `!== false` so a row written before this field existed reads as on, which
+    // is the default — otherwise the switch would render blank for them.
+    dailyNudge: row ? row.dailyNudgeEnabled !== false : true,
+  };
+};
+
+const setDailyNudge = async (deviceId, enabled) => {
+  const row = await pushTokenRepository.setDailyNudge(deviceId, enabled);
+  return { registered: Boolean(row), dailyNudge: row ? row.dailyNudgeEnabled : enabled };
+};
+
+module.exports = {
+  notifyActivity,
+  registerToken,
+  unregisterDevice,
+  getPreferences,
+  setDailyNudge,
+  NOTIFIABLE,
+};

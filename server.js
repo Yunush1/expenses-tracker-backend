@@ -3,6 +3,7 @@ const logger = require("./src/utils/logger");
 const app = require("./src/app");
 const { connectDB } = require("./src/config/db");
 const { initFirebase } = require("./src/config/firebase");
+const { startDailyNudgeJob } = require("./src/jobs/dailyNudgeJob");
 
 logger.info(`[server] Starting in ${config.env} mode`);
 
@@ -12,6 +13,10 @@ const start = async () => {
   // After the database, before the listener: push is optional, so this logs what
   // it did and never blocks the boot (see config/firebase.js).
   initFirebase();
+
+  // Needs Firebase up to send anything, and the database up to know who to send
+  // to — so it starts last. No-ops unless NUDGE_ENABLED=true.
+  startDailyNudgeJob();
 
   const server = app.listen(config.port, () => {
     logger.info(`[server] Listening on port ${config.port}`);

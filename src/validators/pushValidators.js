@@ -12,6 +12,16 @@ const registerTokenSchema = z.object({
     .trim()
     .min(20, "That does not look like a push token")
     .max(4096, "Push token is too long"),
+  /**
+   * The browser's IANA zone, so the evening reminder lands in the evening.
+   * Optional — a browser that will not say falls back to the configured default,
+   * and the value is re-checked against Intl server-side before it is trusted.
+   */
+  timeZone: z.string().trim().max(64).optional(),
 });
 
-module.exports = { registerTokenSchema };
+const preferencesSchema = z.object({
+  dailyNudge: z.boolean(),
+});
+
+module.exports = { registerTokenSchema, preferencesSchema };

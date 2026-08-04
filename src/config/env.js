@@ -51,6 +51,32 @@ const config = Object.freeze({
     clientEmail: (process.env.FIREBASE_CLIENT_EMAIL || "").trim(),
     privateKey: process.env.FIREBASE_PRIVATE_KEY || "",
   }),
+
+  /**
+   * The evening "log your expenses" nudge. Off unless switched on, because a
+   * scheduled job that messages every user is not something a fresh checkout
+   * should start doing by itself.
+   *
+   * The window is in each *device's* local time, not the server's — see
+   * dailyNudgeService. `defaultTimeZone` covers browsers that decline to report
+   * one.
+   */
+  nudge: Object.freeze({
+    enabled: (process.env.NUDGE_ENABLED || "").trim().toLowerCase() === "true",
+    startHour: Number(process.env.NUDGE_START_HOUR ?? 20),
+    endHour: Number(process.env.NUDGE_END_HOUR ?? 22),
+    defaultTimeZone: (process.env.NUDGE_DEFAULT_TZ || "Asia/Kolkata").trim(),
+  }),
+
+  /**
+   * Optional generator for the nudge copy. No token means the curated pool is
+   * used, which is the default and always works.
+   */
+  huggingFace: Object.freeze({
+    token: (process.env.HUGGINGFACE_API_TOKEN || "").trim(),
+    model: (process.env.HUGGINGFACE_MODEL || "meta-llama/Llama-3.1-8B-Instruct").trim(),
+    baseUrl: (process.env.HUGGINGFACE_BASE_URL || "https://router.huggingface.co").replace(/\/+$/, ""),
+  }),
 });
 
 module.exports = config;
