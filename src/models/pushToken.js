@@ -36,6 +36,20 @@ const pushTokenSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    /**
+     * The signed-in account using this browser, when there is one.
+     *
+     * Set on sign-in so a personal-ledger reminder can reach every browser the
+     * person uses, not just the one that created the entry. Null for the ordinary
+     * case — group notifications are addressed by device and never need this, so
+     * the app works exactly as before for anyone who never signs in.
+     */
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
     /** Diagnostic only — which browser this was, when a token misbehaves. */
     userAgent: {
       type: String,

@@ -38,6 +38,12 @@ const config = Object.freeze({
   isProduction: NODE_ENV === "production",
   port: Number(process.env.PORT) || 5000,
   mongoUri: process.env.MONGO_URI,
+  /**
+   * Optional. Shares rate-limit counters and a couple of caches across processes;
+   * absent, everything falls back to in-process state. Not in REQUIRED for the
+   * same reason Firebase is not — see config/redis.js.
+   */
+  redisUrl: (process.env.REDIS_URL || "").trim(),
   clientUrls: parseOrigins(process.env.CLIENT_URLS),
   appBaseUrl: (process.env.APP_BASE_URL || "http://localhost:5173").replace(/\/+$/, ""),
 

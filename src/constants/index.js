@@ -52,6 +52,32 @@ const ACTIVITY_TYPES = Object.freeze({
   SETTLEMENT_RECORDED: "SETTLEMENT_RECORDED",
 });
 
+/**
+ * The three things a personal ledger entry can be (docs/08-PERSONAL-LEDGER.md §1).
+ *
+ * `SPEND` never settles — it is a record of money gone, not a debt. The other two
+ * are the same transaction seen from opposite ends, and are kept as distinct types
+ * rather than one signed amount because "who owes whom" is the question the ledger
+ * exists to answer, and a sign is a poor way to ask it.
+ */
+const LEDGER_ENTRY_TYPES = Object.freeze({
+  SPEND: "SPEND",
+  LENT: "LENT",
+  BORROWED: "BORROWED",
+});
+
+/** Small and fixed. A free-text category field becomes forty spellings of "food". */
+const LEDGER_CATEGORIES = Object.freeze([
+  "FOOD",
+  "TRAVEL",
+  "SHOPPING",
+  "BILLS",
+  "HEALTH",
+  "ENTERTAINMENT",
+  "RENT",
+  "OTHER",
+]);
+
 const BALANCE_STATUS = Object.freeze({
   RECEIVE: "RECEIVE",
   OWE: "OWE",
@@ -86,6 +112,13 @@ const LIMITS = Object.freeze({
   GROUP_DESC_MAX: 500,
   MEMBER_NAME_MAX: 50,
   EXPENSE_DESC_MAX: 140,
+  /** Personal ledger. Descriptions are terser than a group expense's — nobody else has to understand them. */
+  LEDGER_DESC_MAX: 140,
+  LEDGER_NOTE_MAX: 500,
+  /** A name typed by hand, never a member reference — see docs/08-PERSONAL-LEDGER.md §2. */
+  LEDGER_COUNTERPARTY_MAX: 60,
+  /** A loan between friends, not an instalment plan. Bounds an embedded array. */
+  MAX_REPAYMENTS_PER_ENTRY: 50,
   EXPENSE_NOTES_MAX: 500,
   SETTLEMENT_NOTE_MAX: 280,
   /** Percentages carry 2 decimals, so 100% is 10 000 centipercent. */
@@ -100,6 +133,19 @@ const LIMITS = Object.freeze({
 
 const ERROR_CODES = Object.freeze({
   VALIDATION_ERROR: "VALIDATION_ERROR",
+  /** No token, a malformed one, or one this server cannot verify. */
+  UNAUTHENTICATED: "UNAUTHENTICATED",
+  /**
+   * Its own code, separate from UNAUTHENTICATED, because the client's response
+   * differs: an expired token is refreshed and the request retried, whereas an
+   * invalid one means sign in again. Firebase tokens last an hour, so this is a
+   * routine event rather than an error — see docs/09-AUTH.md §3.
+   */
+  TOKEN_EXPIRED: "TOKEN_EXPIRED",
+  /** The account was disabled, or its sessions were revoked. */
+  ACCOUNT_DISABLED: "ACCOUNT_DISABLED",
+  /** Firebase is not configured on this deployment; ledger routes cannot serve. */
+  FEATURE_UNAVAILABLE: "FEATURE_UNAVAILABLE",
   INVALID_AMOUNT: "INVALID_AMOUNT",
   INVALID_ID: "INVALID_ID",
   INVALID_PARTICIPANTS: "INVALID_PARTICIPANTS",
@@ -119,6 +165,11 @@ const ERROR_CODES = Object.freeze({
   GROUP_ARCHIVED: "GROUP_ARCHIVED",
   GROUP_DELETED: "GROUP_DELETED",
   MEMBER_HAS_ACTIVITY: "MEMBER_HAS_ACTIVITY",
+  LEDGER_ENTRY_NOT_FOUND: "LEDGER_ENTRY_NOT_FOUND",
+  /** A repayment that would exceed what is owed — rejected, never clamped. */
+  REPAYMENT_EXCEEDS_PRINCIPAL: "REPAYMENT_EXCEEDS_PRINCIPAL",
+  /** Repayments only make sense on a debt; a SPEND has nothing to repay. */
+  NOT_A_DEBT: "NOT_A_DEBT",
   MEMBER_LIMIT_REACHED: "MEMBER_LIMIT_REACHED",
   ALREADY_CLAIMED: "ALREADY_CLAIMED",
   VERSION_CONFLICT: "VERSION_CONFLICT",
@@ -132,6 +183,8 @@ const DEFAULT_CURRENCY = "INR";
 
 module.exports = {
   GROUP_STATUS,
+  LEDGER_ENTRY_TYPES,
+  LEDGER_CATEGORIES,
   SPLIT_TYPES,
   SPLIT_VALUE_UNITS,
   SETTLEMENT_METHODS,

@@ -13,6 +13,19 @@ class ValidationError extends ApiError {
   }
 }
 
+/**
+ * 401, not 403. The distinction is load-bearing for the client: 401 means "sign
+ * in (again)" and is the cue to refresh the ID token and retry, while 403 means
+ * "signed in, still not allowed" and retrying is pointless. Firebase tokens
+ * expire hourly, so this fires in normal operation and the client must handle it
+ * as routine rather than as a failure — see docs/09-AUTH.md §3.
+ */
+class UnauthorizedError extends ApiError {
+  constructor(message = "Sign in to continue", code = ERROR_CODES.UNAUTHENTICATED) {
+    super(message, 401, code);
+  }
+}
+
 class ForbiddenError extends ApiError {
   constructor(message = "Not allowed", code = ERROR_CODES.NOT_A_MEMBER) {
     super(message, 403, code);
@@ -37,12 +50,26 @@ class GoneError extends ApiError {
   }
 }
 
+/**
+ * The feature exists but this deployment cannot serve it — Firebase is not
+ * configured, so nothing can verify a token. Distinct from 500 because nothing
+ * has failed, and distinct from 404 because the route is real: it tells an
+ * operator to set credentials rather than sending a developer to hunt a bug.
+ */
+class ServiceUnavailableError extends ApiError {
+  constructor(message = "This feature is not available", code = ERROR_CODES.FEATURE_UNAVAILABLE) {
+    super(message, 503, code);
+  }
+}
+
 module.exports = {
   ApiError,
   BadRequestError,
   ValidationError,
+  UnauthorizedError,
   ForbiddenError,
   NotFoundError,
   ConflictError,
   GoneError,
+  ServiceUnavailableError,
 };

@@ -1,7 +1,8 @@
 const { initializeApp, getApp, getApps, cert } = require("firebase-admin/app");
-// Aliased: this module exports its own `getMessaging` — the cached instance
-// rather than the SDK factory — and two identical names would read as one.
+// Aliased: this module exports its own `getMessaging` / `getAuth` — the cached
+// instances rather than the SDK factories — and identical names would read as one.
 const { getMessaging: buildMessaging } = require("firebase-admin/messaging");
+const { getAuth: buildAuth } = require("firebase-admin/auth");
 const config = require("./env");
 const logger = require("../utils/logger");
 
@@ -31,6 +32,7 @@ const logger = require("../utils/logger");
  */
 
 let messaging = null;
+let auth = null;
 
 /**
  * Make a pasted service-account key parseable.
@@ -85,7 +87,10 @@ const initFirebase = () => {
         });
 
     messaging = buildMessaging(app);
-    logger.info(`[firebase] Push notifications enabled for project ${projectId}`);
+    // One Admin app serves both. Auth verifies ID tokens for the personal ledger
+    // (docs/09-AUTH.md); the group API never touches it.
+    auth = buildAuth(app);
+    logger.info(`[firebase] Push and auth enabled for project ${projectId}`);
     return messaging;
   } catch (err) {
     // A malformed key must not take the API down with it.
@@ -99,4 +104,16 @@ const getMessaging = () => messaging;
 
 const isPushEnabled = () => Boolean(messaging);
 
-module.exports = { initFirebase, getMessaging, isPushEnabled };
+/**
+ * The Auth instance, or null when Firebase is unconfigured.
+ *
+ * Null is what makes the scoping in docs/09-AUTH.md §1 structural rather than
+ * merely intended: with no credentials, ledger routes fail closed while the whole
+ * group API carries on. A deployment can run this app with no Firebase at all and
+ * lose nothing but the ledger.
+ */
+const getAuth = () => auth;
+
+const isAuthEnabled = () => Boolean(auth);
+
+module.exports = { initFirebase, getMessaging, isPushEnabled, getAuth, isAuthEnabled };

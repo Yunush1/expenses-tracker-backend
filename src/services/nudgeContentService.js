@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const config = require("../config/env");
+const { getRedis, isRedisReady } = require("../config/redis");
 const logger = require("../utils/logger");
 
 /**
@@ -56,8 +57,47 @@ const NUDGE_POOL = [
   "Payday feels better when the maths is already done. Log it. ✨",
 ];
 
-/** Cache: one generated line per calendar day, shared by every device. */
+/**
+ * Cache: one generated line per calendar day, shared by every device.
+ *
+ * In Redis when available, so a second API instance reuses the line rather than
+ * paying for its own generation — the whole point of "one call per day" is lost
+ * if it becomes one call per day *per process*. In-memory otherwise, which is
+ * correct for a single instance.
+ */
 let cached = { on: "", line: "" };
+
+const REDIS_KEY = (localDate) => `nudge:line:${localDate}`;
+/** Long enough to cover every timezone still on that local date. */
+const REDIS_TTL_SECONDS = 36 * 60 * 60;
+
+const readSharedLine = async (localDate) => {
+  if (cached.on === localDate && cached.line) return cached.line;
+
+  if (isRedisReady()) {
+    try {
+      const line = await getRedis().get(REDIS_KEY(localDate));
+      if (line) {
+        cached = { on: localDate, line };
+        return line;
+      }
+    } catch {
+      /* fall through and generate */
+    }
+  }
+
+  return null;
+};
+
+const writeSharedLine = async (localDate, line) => {
+  cached = { on: localDate, line };
+  if (!isRedisReady()) return;
+  try {
+    await getRedis().set(REDIS_KEY(localDate), line, "EX", REDIS_TTL_SECONDS);
+  } catch {
+    /* the in-memory copy still serves this process */
+  }
+};
 
 const pickFromPool = (seed) => {
   const digest = crypto.createHash("sha256").update(String(seed)).digest();
@@ -153,15 +193,16 @@ const generateWithHuggingFace = async () => {
  */
 const getLine = async ({ deviceId, localDate }) => {
   if (config.huggingFace.token) {
-    if (cached.on === localDate && cached.line) return cached.line;
+    const shared = await readSharedLine(localDate);
+    if (shared) return shared;
 
     const generated = await generateWithHuggingFace();
     if (generated) {
-      cached = { on: localDate, line: generated };
+      await writeSharedLine(localDate, generated);
       logger.info(`[nudge] Generated today's line: "${generated}"`);
       return generated;
     }
-    // Fell through: cache nothing, so tomorrow tries again rather than
+    // Fell through: cache nothing, so the next run tries again rather than
     // remembering a failure.
   }
 
