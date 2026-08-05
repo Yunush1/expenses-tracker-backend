@@ -418,9 +418,12 @@ const deleteExpense = async ({ group, actor, expenseId }) => {
   return true;
 };
 
-const listExpenses = async (group, { cursor, limit = LIMITS.DEFAULT_PAGE_SIZE, memberId } = {}) => {
+const listExpenses = async (
+  group,
+  { cursor, limit = LIMITS.DEFAULT_PAGE_SIZE, memberId, paidBy } = {}
+) => {
   const [rows, nameMap] = await Promise.all([
-    expenseRepository.listByGroup(group._id, { cursor, limit, memberId }),
+    expenseRepository.listByGroup(group._id, { cursor, limit, memberId, paidBy }),
     memberService.buildNameMap(group._id),
   ]);
 

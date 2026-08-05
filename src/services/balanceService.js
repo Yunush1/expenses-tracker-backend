@@ -22,6 +22,10 @@ const logger = require("../utils/logger");
 const toTotalsMap = (rows = []) =>
   new Map(rows.map((row) => [String(row._id), row.total]));
 
+/** How many expenses each member entered — for the per-person expense view. */
+const toCountsMap = (rows = []) =>
+  new Map(rows.map((row) => [String(row._id), row.count || 0]));
+
 const computeBalances = async (groupId) => {
   const [members, expenseAgg, settlementAgg] = await Promise.all([
     memberRepository.findByGroup(groupId, { includeInactive: true }),
@@ -33,6 +37,7 @@ const computeBalances = async (groupId) => {
   const settlementFacets = settlementAgg[0] || {};
 
   const paidMap = toTotalsMap(expenseFacets.paid);
+  const paidCountMap = toCountsMap(expenseFacets.paid);
   const shareMap = toTotalsMap(expenseFacets.shared);
   const settlePaidMap = toTotalsMap(settlementFacets.paid);
   const settleReceivedMap = toTotalsMap(settlementFacets.received);
@@ -64,6 +69,8 @@ const computeBalances = async (groupId) => {
         name: member.name,
         isActive: member.isActive !== false,
         paidMinor,
+        /** Expenses this member entered — drives the per-person view's header. */
+        paidCount: paidCountMap.get(key) || 0,
         shareMinor,
         settlementPaidMinor,
         settlementReceivedMinor,

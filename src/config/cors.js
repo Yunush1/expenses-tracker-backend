@@ -60,7 +60,21 @@ const corsOptions = {
     return callback(error);
   },
   methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "X-Device-Id"],
+  /**
+   * Every custom header the browser is allowed to send.
+   *
+   * This list is exact, not advisory: a header missing here fails the *preflight*,
+   * so the real request is never sent — the browser reports a CORS error with no
+   * response headers and zero bytes, and the server logs nothing at all because
+   * nothing reached it. That makes an omission here look like a server outage or
+   * a wrong CLIENT_URLS, and sends you looking in the wrong place.
+   *
+   * `Authorization` carries the Firebase ID token for the personal ledger. It is
+   * attached only when someone is signed in, which is why forgetting it produced
+   * a failure that came and went with sign-in state rather than a consistent one.
+   */
+  allowedHeaders: ["Content-Type", "X-Device-Id", "Authorization"],
+  // Bearer tokens, not cookies — so the browser never needs to send credentials.
   credentials: false,
 };
 

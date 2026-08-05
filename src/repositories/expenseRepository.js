@@ -19,10 +19,22 @@ const findByClientRequestId = (groupId, clientRequestId) => {
  * Over-fetches by one row so the caller can detect a further page without a
  * second count query. Cursor is an ObjectId anchor, not an offset.
  */
-const listByGroup = async (groupId, { cursor, limit, memberId } = {}) => {
+const listByGroup = async (groupId, { cursor, limit, memberId, paidBy } = {}) => {
   const filter = { groupId, isDeleted: false };
 
-  if (memberId) {
+  /**
+   * Two different questions, deliberately two filters.
+   *
+   * `memberId` asks "which expenses concern me" — paid by me *or* splitting onto
+   * me — and in a group where everyone shares everything that is very nearly all
+   * of them. `paidBy` asks "which are mine", the question someone is answering
+   * when they scan for whether they already entered the taxi fare. Collapsing
+   * them into one parameter would make the per-person view show every member's
+   * section containing nearly every expense.
+   */
+  if (paidBy) {
+    filter.paidBy = paidBy;
+  } else if (memberId) {
     filter.$or = [{ paidBy: memberId }, { "shares.memberId": memberId }];
   }
 
@@ -98,7 +110,10 @@ const aggregateTotals = (groupId) =>
     { $match: { groupId: new mongoose.Types.ObjectId(String(groupId)), isDeleted: false } },
     {
       $facet: {
-        paid: [{ $group: { _id: "$paidBy", total: { $sum: "$amountMinor" } } }],
+        // `count` rides along free — the group stage is already scanning these
+        // rows, and the per-person expense view needs "4 expenses · ₹2,400"
+        // without loading four expenses to find out.
+        paid: [{ $group: { _id: "$paidBy", total: { $sum: "$amountMinor" }, count: { $sum: 1 } } }],
         shared: [
           { $unwind: "$shares" },
           { $group: { _id: "$shares.memberId", total: { $sum: "$shares.amountMinor" } } },

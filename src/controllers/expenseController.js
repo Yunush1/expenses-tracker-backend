@@ -3,8 +3,8 @@ const expenseService = require("../services/expenseService");
 const { ok, created } = require("../utils/apiResponse");
 
 exports.listExpenses = asyncHandler(async (req, res) => {
-  const { cursor, limit, memberId } = req.validatedQuery;
-  const data = await expenseService.listExpenses(req.group, { cursor, limit, memberId });
+  const { cursor, limit, memberId, paidBy } = req.validatedQuery;
+  const data = await expenseService.listExpenses(req.group, { cursor, limit, memberId, paidBy });
   return ok(res, data);
 });
 

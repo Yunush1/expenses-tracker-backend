@@ -142,6 +142,8 @@ const toBalanceDTO = (balance, currentMemberId = null, currency = "INR") => ({
   name: balance.name,
   paidMinor: balance.paidMinor,
   paid: toMajor(balance.paidMinor, currency),
+  /** How many expenses this member entered — for the per-person expense view. */
+  paidCount: balance.paidCount || 0,
   shareMinor: balance.shareMinor,
   share: toMajor(balance.shareMinor, currency),
   netMinor: balance.netMinor,

@@ -110,6 +110,19 @@ const ledgerEntrySchema = new mongoose.Schema(
      */
     settledAt: { type: Date, default: null },
     notes: { type: String, default: "", trim: true, maxlength: LIMITS.LEDGER_NOTE_MAX },
+    /**
+     * How many reminders this entry has already produced, and on which local date
+     * the last one went out.
+     *
+     * Two, ever: one on the due date and one follow-up a week later. The app's job
+     * is to remind, not to chase on someone's behalf — a ledger that pesters daily
+     * gets its notifications blocked, and that costs the expense alerts too
+     * (docs/07-NOTIFICATIONS.md §9). The date is the owner's local one, stored as
+     * a string, so "already reminded today" is answerable without repeating
+     * timezone maths at every read.
+     */
+    reminderCount: { type: Number, default: 0 },
+    lastRemindedOn: { type: String, default: "" },
     /** Soft delete, as expenses are — a deleted entry stays auditable. */
     isDeleted: { type: Boolean, default: false },
     deletedAt: { type: Date, default: null },

@@ -88,7 +88,10 @@ const expenseParamsSchema = z.object({
 });
 
 const listExpensesQuery = paginationQuery.extend({
+  /** Expenses that *concern* this member — paid by them, or split onto them. */
   memberId: objectId.optional(),
+  /** Expenses this member *entered*. See expenseRepository.listByGroup. */
+  paidBy: objectId.optional(),
 });
 
 module.exports = {

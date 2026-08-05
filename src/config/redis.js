@@ -119,6 +119,14 @@ const getRedis = () => client;
 /** Connected *and* ready. A connecting client cannot answer, so it does not count. */
 const isRedisReady = () => Boolean(client && client.status === "ready");
 
+/**
+ * Whether Redis is *meant* to be used, regardless of whether it is up this
+ * instant. Callers that make a once-per-process decision — the rate limiters
+ * choosing a store — must ask this rather than `isRedisReady`, or a blip at boot
+ * degrades them permanently.
+ */
+const isRedisConfigured = () => Boolean(client);
+
 const closeRedis = async () => {
   if (!client) return;
   try {
@@ -129,4 +137,11 @@ const closeRedis = async () => {
   client = null;
 };
 
-module.exports = { initRedis, whenRedisSettled, getRedis, isRedisReady, closeRedis };
+module.exports = {
+  initRedis,
+  whenRedisSettled,
+  getRedis,
+  isRedisReady,
+  isRedisConfigured,
+  closeRedis,
+};

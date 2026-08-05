@@ -1,7 +1,7 @@
 const rateLimit = require("express-rate-limit");
 const RedisStore = require("rate-limit-redis").default || require("rate-limit-redis");
 
-const { getRedis, isRedisReady } = require("../config/redis");
+const { getRedis, isRedisReady, isRedisConfigured } = require("../config/redis");
 const { ERROR_CODES } = require("../constants");
 const logger = require("../utils/logger");
 
@@ -34,15 +34,33 @@ const logger = require("../utils/logger");
 /**
  * A store per limiter, because each keeps its own counters and they must not
  * collide in a shared keyspace.
+ *
+ * Chosen on whether Redis is **configured**, not on whether it happens to be
+ * connected right now. A limiter picks its store once and keeps it for the life
+ * of the process, so deciding on live readiness means a transient blip at boot —
+ * a slow TLS handshake, one refused connect before a retry succeeds — pins that
+ * limiter to in-memory counting *permanently*, long after Redis came back. That
+ * is the bug this whole file exists to prevent, and it would return silently.
+ *
+ * `sendCommand` resolves the client per call, so a reconnect is picked up
+ * automatically; and when Redis is genuinely down the command rejects, which
+ * `passOnStoreError` turns into "allow the request" rather than a 500.
  */
 const buildStore = (name) => {
-  if (!isRedisReady()) return undefined;
+  if (!isRedisConfigured()) return undefined;
 
   try {
     return new RedisStore({
       prefix: `rl:${name}:`,
-      // ioredis exposes `call`; this is the adapter rate-limit-redis expects.
-      sendCommand: (...args) => getRedis().call(...args),
+      sendCommand: (...args) => {
+        const client = getRedis();
+        // Rejecting is the contract passOnStoreError understands. Returning
+        // undefined here would look like a successful count of nothing.
+        if (!client || !isRedisReady()) {
+          return Promise.reject(new Error("redis unavailable"));
+        }
+        return client.call(...args);
+      },
     });
   } catch (err) {
     logger.warn(`[rateLimiter] Redis store unavailable for "${name}", counting in memory: ${err.message}`);
@@ -57,15 +75,22 @@ const build = (name, windowMs, max, message) =>
     standardHeaders: true,
     legacyHeaders: false,
     store: buildStore(name),
+    /**
+     * A Redis outage must not 429 — or 500 — everybody.
+     *
+     * The limits here protect against scraping and spam; none of them is worth
+     * taking the expense tracker down for. Letting requests through while the
+     * store is unreachable is the same posture the service had before Redis
+     * existed, and it fails in the direction of the app still working.
+     */
+    passOnStoreError: true,
     handler: (req, res) =>
       res.status(429).json({ success: false, message, code: ERROR_CODES.RATE_LIMITED }),
   });
 
 /**
- * Built lazily, on first use, because Redis connects asynchronously during boot:
- * constructing these at module load would capture `isRedisReady() === false` and
- * pin every limiter to memory for the life of the process, silently undoing the
- * whole point.
+ * Built on first use rather than at module load, so `initRedis()` has run and
+ * `isRedisConfigured()` can answer truthfully.
  */
 const lazy = (factory) => {
   let limiter = null;

@@ -1,5 +1,7 @@
 const cron = require("node-cron");
 const dailyNudgeService = require("./../services/dailyNudgeService");
+const ledgerReminderService = require("./../services/ledgerReminderService");
+const { isPushEnabled } = require("../config/firebase");
 const config = require("../config/env");
 const logger = require("../utils/logger");
 
@@ -28,7 +30,27 @@ const tick = async () => {
 
   running = true;
   try {
-    await dailyNudgeService.run();
+    /**
+     * Two jobs, one tick, run independently.
+     *
+     * `allSettled` rather than `all`: a failure in the evening nudge must not
+     * stop a loan reminder someone explicitly asked for, and vice versa. They
+     * share a schedule, not a fate.
+     *
+     * Ledger reminders run whether or not `NUDGE_ENABLED` is set — that flag
+     * governs the unsolicited nag, while a due-date reminder was requested by
+     * the act of setting a date (services/ledgerReminderService).
+     */
+    const results = await Promise.allSettled([
+      dailyNudgeService.run(),
+      ledgerReminderService.run(),
+    ]);
+
+    for (const result of results) {
+      if (result.status === "rejected") {
+        logger.error(`[nudge] Tick task failed: ${result.reason?.stack || result.reason}`);
+      }
+    }
   } catch (err) {
     // A scheduled job must never throw into the timer; an unhandled rejection
     // here takes the process down under server.js's own handler.
@@ -39,26 +61,36 @@ const tick = async () => {
 };
 
 const startDailyNudgeJob = () => {
-  if (!config.nudge.enabled) {
-    logger.info("[nudge] Daily reminder disabled (set NUDGE_ENABLED=true to turn it on)");
-    return null;
-  }
-
   const { startHour, endHour, defaultTimeZone } = config.nudge;
 
   if (!(startHour >= 0 && endHour <= 24 && startHour < endHour)) {
     logger.error(
-      `[nudge] Invalid window ${startHour}:00–${endHour}:00 — reminder disabled. ` +
+      `[nudge] Invalid window ${startHour}:00–${endHour}:00 — scheduler not started. ` +
         "NUDGE_START_HOUR must be less than NUDGE_END_HOUR, both within 0–24."
     );
+    return null;
+  }
+
+  /**
+   * The tick starts whenever push is available, not only when the nudge is on.
+   *
+   * `NUDGE_ENABLED` governs the *unsolicited* evening nag. Ledger due-date
+   * reminders were asked for — by someone putting a date on an entry — and gating
+   * them behind the nag's flag would mean a reminder silently never arriving
+   * because an unrelated setting was off. Each service decides for itself whether
+   * it has work; an idle tick costs one indexed query.
+   */
+  if (!isPushEnabled()) {
+    logger.info("[nudge] Scheduler not started — push is not configured, so nothing could be sent");
     return null;
   }
 
   const task = cron.schedule(EXPRESSION, tick);
 
   logger.info(
-    `[nudge] Daily reminder on — ${startHour}:00–${endHour}:00 in each device's local time ` +
-      `(default ${defaultTimeZone} when a browser doesn't say)`
+    `[nudge] Scheduler on — ${startHour}:00–${endHour}:00 in each device's local time ` +
+      `(default ${defaultTimeZone}). Evening nudge: ${config.nudge.enabled ? "on" : "off"}; ` +
+      "ledger due reminders: on."
   );
 
   return task;
