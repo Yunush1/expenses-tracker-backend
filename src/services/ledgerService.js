@@ -1,4 +1,5 @@
 const ledgerRepository = require("../repositories/ledgerRepository");
+const pointsService = require("./pointsService");
 const { toMinor, assertMinor, formatMinor } = require("../utils/money");
 const { buildPage, decodeCursor } = require("../utils/cursor");
 const { NotFoundError, BadRequestError, ConflictError } = require("../errors");
@@ -7,6 +8,7 @@ const {
   ERROR_CODES,
   LIMITS,
   DEFAULT_CURRENCY,
+  POINT_EVENT_TYPES,
 } = require("../constants");
 
 /**
@@ -157,7 +159,32 @@ const createEntry = async (userId, dto) => {
   });
 
   await ledgerRepository.touchActivity(ledger._id);
+
+  /**
+   * Points, best effort and not awaited — the entry is saved either way.
+   *
+   * `ACTIVE_DAY` rather than one per entry: adding a fifth spend today earns
+   * nothing more than the first, because paying per row is an incentive to
+   * create rows (docs/11-REWARDS.md §2).
+   */
+  awardEntryPoints(userId, entry).catch(() => {});
+
   return toEntryDTO(entry);
+};
+
+/** Earning that follows from creating a ledger entry. Never throws. */
+const awardEntryPoints = async (userId, entry) => {
+  const first = await pointsService.award(userId, POINT_EVENT_TYPES.FIRST_LEDGER_ENTRY, {
+    entryId: String(entry._id),
+  });
+
+  const daily = await pointsService.award(userId, POINT_EVENT_TYPES.ACTIVE_DAY, {
+    source: "ledger",
+    entryId: String(entry._id),
+  });
+
+  if (daily) await pointsService.awardStreakMilestones(userId);
+  return { first, daily };
 };
 
 const updateEntry = async (userId, entryId, dto) => {
@@ -261,11 +288,24 @@ const addRepayment = async (userId, entryId, dto) => {
   });
 
   // Settled is derived from the rows, then recorded — never set independently.
-  if (outstandingOf(entry) === 0) entry.settledAt = new Date();
+  const nowSettled = outstandingOf(entry) === 0;
+  if (nowSettled) entry.settledAt = new Date();
   entry.version += 1;
 
   await entry.save();
   await ledgerRepository.touchActivity(ledger._id);
+
+  /**
+   * Points only when the debt actually closes, not for every part payment.
+   * Rewarding each instalment would pay someone to record ₹1,000 as a hundred
+   * ₹10 repayments — the same per-row incentive §2 rules out for expenses.
+   */
+  if (nowSettled) {
+    pointsService
+      .award(userId, POINT_EVENT_TYPES.LEDGER_REPAID, { entryId: String(entry._id) })
+      .catch(() => {});
+  }
+
   return toEntryDTO(entry);
 };
 

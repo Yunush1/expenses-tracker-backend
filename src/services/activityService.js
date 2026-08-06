@@ -1,5 +1,6 @@
 const activityRepository = require("../repositories/activityRepository");
 const pushService = require("./pushService");
+const pointsService = require("./pointsService");
 const { toActivityDTO } = require("../serializers");
 const { buildPage } = require("../utils/cursor");
 const { LIMITS } = require("../constants");
@@ -48,6 +49,16 @@ const record = async ({ groupId, type, actor = null, message, metadata = {} }, s
       pushService
         .notifyActivity(activity, actor)
         .catch((err) => logger.error(`[activityService] Push dispatch failed: ${err.message}`));
+
+      /**
+       * Reward points, on the same terms as the push: not awaited, never able to
+       * fail the write that triggered it, and skipped inside a transaction for
+       * the same reason — points awarded for an expense that then rolls back
+       * cannot be taken back (docs/11-REWARDS.md).
+       */
+      pointsService
+        .awardForActivity(activity, actor)
+        .catch((err) => logger.error(`[activityService] Points award failed: ${err.message}`));
     }
 
     return activity;

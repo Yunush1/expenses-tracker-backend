@@ -188,17 +188,25 @@ const notifyActivity = async (activity, actor) => {
  * loaded by activityService, and dailyNudgeService loads pushTokenRepository, so
  * a top-level require would close a cycle.
  */
-const registerToken = ({ deviceId, token, userAgent, timeZone }) => {
+const registerToken = async ({ deviceId, token, userAgent, timeZone }) => {
   // eslint-disable-next-line global-require -- see above
   const { computeNextNudgeAt } = require("./dailyNudgeService");
+  // eslint-disable-next-line global-require -- same cycle: points reads the User
+  const pointsService = require("./pointsService");
 
-  return pushTokenRepository.upsert({
+  const row = await pushTokenRepository.upsert({
     deviceId,
     token,
     userAgent,
     timeZone,
     nextNudgeAt: computeNextNudgeAt(deviceId, timeZone),
   });
+
+  // Best effort and unawaited: a points failure must not fail the registration
+  // that someone just granted browser permission for.
+  pointsService.awardNotificationsEnabled(deviceId).catch(() => {});
+
+  return row;
 };
 
 const unregisterDevice = (deviceId) => pushTokenRepository.removeByDeviceId(deviceId);

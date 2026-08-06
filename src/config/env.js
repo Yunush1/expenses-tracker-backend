@@ -83,6 +83,32 @@ const config = Object.freeze({
     model: (process.env.HUGGINGFACE_MODEL || "meta-llama/Llama-3.1-8B-Instruct").trim(),
     baseUrl: (process.env.HUGGINGFACE_BASE_URL || "https://router.huggingface.co").replace(/\/+$/, ""),
   }),
+
+  /**
+   * The finance assistant (docs/10-AI-ASSISTANT.md).
+   *
+   * Deliberately generic rather than named after one vendor: the endpoint shape
+   * is OpenAI's `/v1/chat/completions`, which Hugging Face's router, OpenAI,
+   * Groq, Together and most others all speak. Switching provider is three env
+   * vars, not a code change — pricing and capability move faster than this
+   * product will, and a vendor name compiled across a dozen files is a migration
+   * nobody schedules.
+   *
+   * Falls back to the Hugging Face values so a deployment that already
+   * configured those gets the assistant without touching anything.
+   */
+  ai: Object.freeze({
+    apiKey: (process.env.AI_API_KEY || process.env.HUGGINGFACE_API_TOKEN || "").trim(),
+    baseUrl: (process.env.AI_BASE_URL || process.env.HUGGINGFACE_BASE_URL || "https://router.huggingface.co")
+      .replace(/\/+$/, ""),
+    model: (process.env.AI_MODEL || process.env.HUGGINGFACE_MODEL || "meta-llama/Llama-3.1-8B-Instruct").trim(),
+    /**
+     * Questions per account per day. Small on purpose: generous for a person,
+     * useless to a script, and it bounds the bill even if everything else fails.
+     */
+    dailyQuota: Number(process.env.AI_DAILY_QUOTA ?? 20),
+    timeoutMs: Number(process.env.AI_TIMEOUT_MS ?? 20000),
+  }),
 });
 
 module.exports = config;

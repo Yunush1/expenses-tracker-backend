@@ -3,6 +3,8 @@ const groupRoutes = require("./groupRoutes");
 const pushRoutes = require("./pushRoutes");
 const authRoutes = require("./authRoutes");
 const ledgerRoutes = require("./ledgerRoutes");
+const aiRoutes = require("./aiRoutes");
+const pointsRoutes = require("./pointsRoutes");
 
 const router = express.Router();
 
@@ -21,5 +23,12 @@ router.use("/auth", authRoutes);
  * everything above it works with no sign-in at all.
  */
 router.use("/ledger", ledgerRoutes);
+/**
+ * The finance assistant. Account-gated like the ledger, because it reads the
+ * same private data and costs money per call (docs/10-AI-ASSISTANT.md §3).
+ */
+router.use("/ai", aiRoutes);
+/** Reward points — earned from domain events, spent on Ria (docs/11-REWARDS.md). */
+router.use("/points", pointsRoutes);
 
 module.exports = router;

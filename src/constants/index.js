@@ -78,6 +78,61 @@ const LEDGER_CATEGORIES = Object.freeze([
   "OTHER",
 ]);
 
+/**
+ * Reward point events (docs/11-REWARDS.md).
+ *
+ * Note what is absent: nothing per-expense. Points are awarded for logging on a
+ * *day*, not for each row — paying per row is a standing incentive to create
+ * rows, and in a shared group that silently distorts what everyone else owes.
+ */
+const POINT_EVENT_TYPES = Object.freeze({
+  /** At least one expense or ledger entry today. Once daily, however many. */
+  ACTIVE_DAY: "ACTIVE_DAY",
+  /** Closed a debt — the loop that actually matters. */
+  SETTLEMENT: "SETTLEMENT",
+  LEDGER_REPAID: "LEDGER_REPAID",
+  STREAK_3: "STREAK_3",
+  STREAK_7: "STREAK_7",
+  STREAK_14: "STREAK_14",
+  STREAK_30: "STREAK_30",
+  FIRST_GROUP: "FIRST_GROUP",
+  FIRST_LEDGER_ENTRY: "FIRST_LEDGER_ENTRY",
+  NOTIFICATIONS_ENABLED: "NOTIFICATIONS_ENABLED",
+  /** Negative. The only sink in v1. */
+  SPEND_AI_QUESTION: "SPEND_AI_QUESTION",
+});
+
+/** Point values and how often each may be earned. Amounts of money never feature. */
+const POINT_RULES = Object.freeze({
+  [POINT_EVENT_TYPES.ACTIVE_DAY]: { points: 10, perDay: 1 },
+  [POINT_EVENT_TYPES.SETTLEMENT]: { points: 15, perDay: 2 },
+  [POINT_EVENT_TYPES.LEDGER_REPAID]: { points: 15, perDay: 2 },
+  [POINT_EVENT_TYPES.STREAK_3]: { points: 20, once: true },
+  [POINT_EVENT_TYPES.STREAK_7]: { points: 50, once: true },
+  [POINT_EVENT_TYPES.STREAK_14]: { points: 100, once: true },
+  [POINT_EVENT_TYPES.STREAK_30]: { points: 250, once: true },
+  [POINT_EVENT_TYPES.FIRST_GROUP]: { points: 25, once: true },
+  [POINT_EVENT_TYPES.FIRST_LEDGER_ENTRY]: { points: 25, once: true },
+  [POINT_EVENT_TYPES.NOTIFICATIONS_ENABLED]: { points: 25, once: true },
+});
+
+const POINTS = Object.freeze({
+  /**
+   * Ceiling on ordinary earning per day, independent of the individual rules —
+   * so a rule added carelessly later cannot uncap the economy. Streak milestones
+   * are exempt: they are once-ever and already bounded.
+   */
+  DAILY_EARN_CAP: 60,
+  /** One Ria question beyond the free daily quota. */
+  AI_QUESTION_COST: 10,
+  STREAK_MILESTONES: Object.freeze([
+    { days: 3, type: POINT_EVENT_TYPES.STREAK_3 },
+    { days: 7, type: POINT_EVENT_TYPES.STREAK_7 },
+    { days: 14, type: POINT_EVENT_TYPES.STREAK_14 },
+    { days: 30, type: POINT_EVENT_TYPES.STREAK_30 },
+  ]),
+});
+
 const BALANCE_STATUS = Object.freeze({
   RECEIVE: "RECEIVE",
   OWE: "OWE",
@@ -185,6 +240,9 @@ module.exports = {
   GROUP_STATUS,
   LEDGER_ENTRY_TYPES,
   LEDGER_CATEGORIES,
+  POINT_EVENT_TYPES,
+  POINT_RULES,
+  POINTS,
   SPLIT_TYPES,
   SPLIT_VALUE_UNITS,
   SETTLEMENT_METHODS,
