@@ -4,6 +4,7 @@ const memberRepository = require("../repositories/memberRepository");
 const expenseRepository = require("../repositories/expenseRepository");
 const memberService = require("./memberService");
 const activityService = require("./activityService");
+const ledgerMirrorService = require("./ledgerMirrorService");
 const {
   calculateShares,
   assertSharesBalance,
@@ -151,6 +152,14 @@ const createExpense = async ({ group, actor, dto }) => {
 
   await groupRepository.touchActivity(group._id);
 
+  /**
+   * Reflect the creator's own share into their personal ledger, when they have an
+   * account. Unawaited: this is a convenience for people who signed in, and it
+   * must not add latency or a failure mode to adding an expense — which works
+   * with no account at all (docs/08-PERSONAL-LEDGER.md §12).
+   */
+  ledgerMirrorService.mirrorExpense({ group, actor, expense }).catch(() => {});
+
   return { expense: toExpenseDTO(expense, nameMap, group.currency), created: true };
 };
 
@@ -263,6 +272,16 @@ const createExpenseBatch = async ({ group, actor, dto }) => {
     });
 
     await groupRepository.touchActivity(group._id);
+
+    /**
+     * One mirror per line, not one for the batch: a shop run is five separate
+     * things bought, and collapsing them into a single personal entry would lose
+     * exactly the detail the ledger exists to keep. Sequential and unawaited —
+     * bounded at 20, and never allowed to delay the response.
+     */
+    Promise.all(
+      written.map((expense) => ledgerMirrorService.mirrorExpense({ group, actor, expense }))
+    ).catch(() => {});
   }
 
   return {
@@ -380,6 +399,14 @@ const updateExpense = async ({ group, actor, expenseId, dto }) => {
 
   await groupRepository.touchActivity(group._id);
 
+  /**
+   * Keep any mirror in step. Note this recomputes the *share*, not the total: an
+   * edit that only adds a participant leaves the amount untouched while changing
+   * what each person actually spent, and a mirror that ignored that would drift
+   * quietly and permanently.
+   */
+  ledgerMirrorService.syncMirror(updated).catch(() => {});
+
   return toExpenseDTO(updated, nameMap, group.currency);
 };
 
@@ -414,6 +441,9 @@ const deleteExpense = async ({ group, actor, expenseId }) => {
   });
 
   await groupRepository.touchActivity(group._id);
+
+  // The personal copy goes with it — soft-deleted, so the history is still there.
+  ledgerMirrorService.removeMirror(deleted._id).catch(() => {});
 
   return true;
 };

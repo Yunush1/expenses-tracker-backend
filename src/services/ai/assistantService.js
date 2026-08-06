@@ -1,5 +1,6 @@
 const aiProvider = require("./aiProvider");
 const financeContext = require("./financeContext");
+const expenseDraft = require("./expenseDraft");
 const { suggestFollowUps } = require("./suggestions");
 const pointsService = require("../pointsService");
 const { getRedis, isRedisReady } = require("../../config/redis");
@@ -29,14 +30,39 @@ const localCounts = new Map();
 const quotaKey = (userId) => `ai:quota:${userId}:${new Date().toISOString().slice(0, 10)}`;
 
 /**
+ * Two tiers, decided by how old the account is.
+ *
+ * Account age rather than "questions asked so far", because age is monotonic and
+ * unforgeable from the client — a usage-based definition would let someone stay
+ * "new" indefinitely by rationing their own questions, which is precisely
+ * backwards.
+ *
+ * A caller that passes only an id gets the established tier. That is the safe
+ * default: the failure mode is charging full price, not giving away a cheaper
+ * rate to everyone.
+ */
+const NEW_USER_MS = () => config.ai.newUserDays * 24 * 60 * 60 * 1000;
+
+const isNewAccount = (user) => {
+  const createdAt = user?.createdAt;
+  if (!createdAt) return false;
+  return Date.now() - new Date(createdAt).getTime() < NEW_USER_MS();
+};
+
+/** The free daily allowance and the point price that follows the tier. */
+const tierFor = (user) =>
+  isNewAccount(user)
+    ? { isNew: true, limit: config.ai.newUserQuota, cost: POINTS.AI_QUESTION_COST_NEW }
+    : { isNew: false, limit: config.ai.dailyQuota, cost: POINTS.AI_QUESTION_COST };
+
+/**
  * Count this question against the daily allowance.
  *
  * Incremented **before** the provider call, not after. A failed call still costs
  * latency and can still cost money, and counting only successes turns any
  * provider error into an unmetered retry loop.
  */
-const consumeQuota = async (userId) => {
-  const limit = config.ai.dailyQuota;
+const consumeQuota = async (userId, limit) => {
   const key = quotaKey(userId);
 
   if (isRedisReady()) {
@@ -58,8 +84,7 @@ const consumeQuota = async (userId) => {
   return { used, limit, allowed: used <= limit };
 };
 
-const peekQuota = async (userId) => {
-  const limit = config.ai.dailyQuota;
+const peekQuota = async (userId, limit) => {
   const key = quotaKey(userId);
 
   if (isRedisReady()) {
@@ -91,6 +116,7 @@ Rules:
 - Do NOT do arithmetic. Do not add, subtract, average or project numbers yourself. If a figure is not in the context, say it is not available rather than working it out.
 - If the context does not answer the question, say so plainly and mention what you can see instead. Never guess or invent a transaction, person, amount or date.
 - "Groups" are shared expenses split with other people. The "ledger" is this person's private record of what they spent alone and money they lent or borrowed. Keep the two distinct, and never add a group balance to a ledger figure — they are different kinds of money.
+- A ledger spending entry with a "fromGroup" field is this person's own share of a group expense, already included in the ledger totals. The same bill also appears under that group as its full amount. Never add the two together, and when asked what they spent, use the ledger figure — it is their share, not what they fronted for everyone.
 - Inside a group: "members" shows what each person paid and their net position. "settlementPlan" is the app's own calculation of the fewest payments that clear every debt — quote it as-is when asked how to settle up, and never propose a different set of payments. "paymentsRecorded" are transfers that already happened, and are already reflected in the balances, so do not subtract them again.
 - When several groups are present, name the group you are talking about.
 - Be brief: two or three sentences for a simple question. Use a short list only when comparing several items.
@@ -102,10 +128,13 @@ const MAX_QUESTION_LENGTH = 500;
 /**
  * Answer a question about the signed-in person's finances.
  *
- * @param userId    the verified account — never taken from the request body
+ * @param user      the verified account — never taken from the request body
  * @param question  free text from the user
  */
-const ask = async (userId, question, previous = null, asked = []) => {
+const ask = async (user, question, previous = null, asked = []) => {
+  const userId = user?._id || user;
+  const tier = tierFor(user);
+
   if (!aiProvider.isConfigured()) {
     throw new ServiceUnavailableError(
       "The assistant is not configured on this server.",
@@ -127,26 +156,48 @@ const ask = async (userId, question, previous = null, asked = []) => {
    * (docs/11-REWARDS.md §4). So the daily quota is spent first, and only once it
    * is gone does a question cost points.
    */
-  const quota = await consumeQuota(userId);
+  const quota = await consumeQuota(userId, tier.limit);
   let paidWithPoints = false;
 
   if (!quota.allowed) {
     paidWithPoints = await pointsService.spend(
       userId,
       POINT_EVENT_TYPES.SPEND_AI_QUESTION,
-      POINTS.AI_QUESTION_COST,
-      { question: trimmed.slice(0, 80) }
+      tier.cost,
+      { question: trimmed.slice(0, 80), cost: tier.cost, newAccount: tier.isNew }
     );
 
     if (!paidWithPoints) {
       const balance = await pointsService.getBalance(userId);
       throw new BadRequestError(
         `You've used all ${quota.limit} free questions for today. ` +
-          `Another costs ${POINTS.AI_QUESTION_COST} points and you have ${balance} — ` +
+          `Another costs ${tier.cost} points and you have ${balance} — ` +
           "log an expense or settle up to earn more, or come back tomorrow.",
         ERROR_CODES.RATE_LIMITED
       );
     }
+  }
+
+  /**
+   * "Add 1200 for dinner" is a different kind of message from "what did I spend".
+   *
+   * Checked before the context is built, because a draft needs the member roster
+   * rather than the balance snapshot — and building both would pay for a page of
+   * JSON the drafting prompt never reads.
+   *
+   * The result is a **proposal**, never a write. See expenseDraft.js for why the
+   * confirmation step is not optional.
+   */
+  const draft = await expenseDraft.draftExpense(user, trimmed).catch(() => null);
+  if (draft) {
+    return {
+      answer: draft.needsGroup
+        ? "Which group is that for?"
+        : `${draft.description} · ${draft.amount} in ${draft.groupName}. Check it and tap Add.`,
+      usedContext: false,
+      draft,
+      quota: { used: quota.used, limit: quota.limit, paidWithPoints, pointCost: tier.cost },
+    };
   }
 
   const context = await financeContext.build(userId);
@@ -160,7 +211,7 @@ const ask = async (userId, question, previous = null, asked = []) => {
       answer:
         "I can't see any expenses or ledger entries for your account yet. Add a few — or open a group on this device — and ask me again.",
       usedContext: false,
-      quota: { used: quota.used, limit: quota.limit, paidWithPoints },
+      quota: { used: quota.used, limit: quota.limit, paidWithPoints, pointCost: tier.cost },
     };
   }
 
@@ -204,7 +255,7 @@ const ask = async (userId, question, previous = null, asked = []) => {
     return {
       answer,
       usedContext: true,
-      quota: { used: quota.used, limit: quota.limit, paidWithPoints },
+      quota: { used: quota.used, limit: quota.limit, paidWithPoints, pointCost: tier.cost },
       /**
        * Where to go next, derived from the same context the answer came from —
        * so every offer is answerable, and none of them repeats what was just
@@ -241,10 +292,21 @@ const ask = async (userId, question, previous = null, asked = []) => {
  * decide whether the floating button appears, so it must stay two reads, not the
  * half-dozen queries a snapshot costs.
  */
-const status = async (userId) => ({
-  enabled: aiProvider.isConfigured(),
-  ...(await peekQuota(userId)),
-});
+const status = async (user) => {
+  const tier = tierFor(user);
+  return {
+    enabled: aiProvider.isConfigured(),
+    ...(await peekQuota(user?._id || user, tier.limit)),
+    /**
+     * The price this account actually pays, sent rather than assumed. The client
+     * has no way to know which tier someone is in, and a drawer that offers "Use
+     * 10 points" while the server charges 5 is a small lie that erodes the whole
+     * points display.
+     */
+    pointCost: tier.cost,
+    newAccount: tier.isNew,
+  };
+};
 
 /**
  * Opening questions, for the empty state of the drawer.

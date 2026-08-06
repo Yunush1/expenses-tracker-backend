@@ -11,6 +11,10 @@
     "test": "node --test \"tests/**/*.test.js\"",
     "migrate:devices": "cross-env NODE_ENV=development node scripts/migrate-device-ids.js",
     "ai:check": "cross-env NODE_ENV=development node scripts/check-ai.js",
+    "mirror:check": "cross-env NODE_ENV=development node scripts/check-mirror.js",
+    "draft:check": "cross-env NODE_ENV=development node scripts/check-draft.js",
+    "mirror:backfill": "cross-env NODE_ENV=development node scripts/backfill-mirrors.js",
+    "mirror:backfill:dry": "cross-env NODE_ENV=development node scripts/backfill-mirrors.js --dry",
     "nudge:test": "cross-env NODE_ENV=development node scripts/send-test-nudge.js",
     "nudge:dry": "cross-env NODE_ENV=development node scripts/send-test-nudge.js --dry",
     "tunel": "cross-env NODE_ENV=development node server.js --tunel"

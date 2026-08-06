@@ -47,6 +47,14 @@ const toEntryDTO = (entry) => ({
   settledAt: entry.settledAt,
   notes: entry.notes,
   version: entry.version,
+  /**
+   * Where the row came from. A mirrored group expense is not fully the owner's to
+   * edit — it follows the group — and a personal ledger that grows rows nobody
+   * typed, with no indication why, is a bug report waiting to happen.
+   */
+  source: entry.source || "MANUAL",
+  fromGroup: entry.sourceGroupName || null,
+  groupId: entry.sourceGroupId ? String(entry.sourceGroupId) : null,
   repayments: (entry.repayments || []).map((r) => ({
     id: String(r._id),
     amountMinor: r.amountMinor,
@@ -191,6 +199,22 @@ const updateEntry = async (userId, entryId, dto) => {
   const ledger = await getOrCreate(userId);
   const entry = await ledgerRepository.findEntry(ledger._id, entryId);
   if (!entry) throw new NotFoundError("Entry not found", ERROR_CODES.LEDGER_ENTRY_NOT_FOUND);
+
+  /**
+   * A mirrored group expense is not editable here.
+   *
+   * Not to protect the group — nothing in this file can reach a group balance —
+   * but because the edit would not survive. The mirror is recomputed whenever the
+   * expense changes, so a corrected amount would silently revert the next time
+   * anyone touched it in the group, which is worse than refusing. Deleting is
+   * still allowed: it is their ledger, and a deleted mirror stays deleted.
+   */
+  if (entry.source === "GROUP_EXPENSE") {
+    throw new BadRequestError(
+      `This came from "${entry.sourceGroupName || "a group"}" — edit it there and it will update here.`,
+      ERROR_CODES.LEDGER_ENTRY_NOT_EDITABLE
+    );
+  }
 
   /**
    * Optimistic concurrency, as expenses have. Two tabs open on the same entry is

@@ -178,6 +178,16 @@ const POINTS = Object.freeze({
   DAILY_EARN_CAP: 60,
   /** One Ria question beyond the free daily quota. */
   AI_QUESTION_COST: 10,
+  /**
+   * The same question, for an account still inside its first `AI_NEW_USER_DAYS`.
+   *
+   * Half price, because a new account has the welcome bonus and no earning
+   * history: at full price the bonus buys five questions, at half it buys ten —
+   * enough to find out whether the assistant is worth the daily habit that earns
+   * more. Nothing here is time-limited *after* that; the price simply returns to
+   * normal once the account is no longer new (docs/10-AI-ASSISTANT.md §5).
+   */
+  AI_QUESTION_COST_NEW: 5,
   STREAK_MILESTONES: Object.freeze([
     { days: 3, type: POINT_EVENT_TYPES.STREAK_3 },
     { days: 7, type: POINT_EVENT_TYPES.STREAK_7 },
@@ -274,6 +284,8 @@ const ERROR_CODES = Object.freeze({
   GROUP_DELETED: "GROUP_DELETED",
   MEMBER_HAS_ACTIVITY: "MEMBER_HAS_ACTIVITY",
   LEDGER_ENTRY_NOT_FOUND: "LEDGER_ENTRY_NOT_FOUND",
+  /** Mirrored from a group expense — edit it there, or the change gets reverted. */
+  LEDGER_ENTRY_NOT_EDITABLE: "LEDGER_ENTRY_NOT_EDITABLE",
   /** A repayment that would exceed what is owed — rejected, never clamped. */
   REPAYMENT_EXCEEDS_PRINCIPAL: "REPAYMENT_EXCEEDS_PRINCIPAL",
   /** Repayments only make sense on a debt; a SPEND has nothing to repay. */

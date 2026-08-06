@@ -123,6 +123,54 @@ const ledgerEntrySchema = new mongoose.Schema(
      */
     reminderCount: { type: Number, default: 0 },
     lastRemindedOn: { type: String, default: "" },
+    /**
+     * Where this row came from: typed by hand, or mirrored from a group expense.
+     *
+     * A mirrored entry is **this person's share** of a shared bill, not its total
+     * — if I pay ₹1,000 for a dinner split four ways, ₹250 is what I actually
+     * spent and ₹750 is money owed back to me, which the group already tracks.
+     * Storing the total here would inflate their personal spending by whatever
+     * they happen to have fronted (docs/08-PERSONAL-LEDGER.md §12).
+     *
+     * The distinction is kept rather than merged because these rows are not fully
+     * the owner's to edit: they follow the group expense, and they must be
+     * identifiable so a total that also counts the group is not double-counted.
+     */
+    source: {
+      type: String,
+      enum: ["MANUAL", "GROUP_EXPENSE"],
+      default: "MANUAL",
+    },
+    /**
+     * The expense this mirrors. No `default: null` — a sparse index skips missing
+     * fields, not null ones, so a default would make every manual entry collide
+     * on the uniqueness guarantee below. (Learned the hard way; see
+     * docs/12-REFERRALS.md §6.)
+     */
+    sourceExpenseId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Expense",
+    },
+    sourceGroupId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Group",
+    },
+    /**
+     * Which member of that group the owner was.
+     *
+     * Needed because an edit can change someone's share without changing the
+     * expense total — adding a fourth person to a ₹1,000 bill moves a share from
+     * ₹333 to ₹250 — so keeping the mirror in step means recomputing *this
+     * member's* share, which requires knowing which member that was. It cannot be
+     * re-derived later: a member can be renamed, removed, or have their devices
+     * change hands.
+     */
+    sourceMemberId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Member",
+    },
+    /** Shown on the entry, so a row nobody typed is never a mystery. */
+    sourceGroupName: { type: String, default: "", trim: true, maxlength: LIMITS.GROUP_NAME_MAX },
     /** Soft delete, as expenses are — a deleted entry stays auditable. */
     isDeleted: { type: Boolean, default: false },
     deletedAt: { type: Date, default: null },
@@ -138,6 +186,19 @@ ledgerEntrySchema.index({ ledgerId: 1, isDeleted: 1, occurredAt: -1, _id: -1 });
 ledgerEntrySchema.index({ ledgerId: 1, type: 1, settledAt: 1, isDeleted: 1 });
 /** The reminder sweep — must find due entries without scanning every ledger. */
 ledgerEntrySchema.index({ dueAt: 1, settledAt: 1, isDeleted: 1 });
+/**
+ * One mirror per expense, per ledger — enforced by the database rather than by a
+ * check-then-write in the service.
+ *
+ * The mirror is written from a fire-and-forget hook on an endpoint clients retry,
+ * so "did we already mirror this?" is a question two requests can ask at the same
+ * time and both answer no. The index makes the loser of that race an error to
+ * swallow instead of a duplicate row in someone's private ledger.
+ */
+ledgerEntrySchema.index(
+  { ledgerId: 1, sourceExpenseId: 1 },
+  { unique: true, sparse: true }
+);
 
 /**
  * Guard the one invariant that cannot be recovered from: you cannot repay more

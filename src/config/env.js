@@ -183,6 +183,20 @@ const config = Object.freeze({
      * useless to a script, and it bounds the bill even if everything else fails.
      */
     dailyQuota: Number(process.env.AI_DAILY_QUOTA ?? 20),
+    /**
+     * The free allowance for a brand new account — smaller, and paired with a
+     * cheaper point price (see POINTS.AI_QUESTION_COST_NEW).
+     *
+     * The shape is deliberate. A new account holds the welcome bonus and little
+     * else, so a *high* free quota that then falls off a cliff at full price
+     * teaches someone the assistant is free right before it stops being. A modest
+     * allowance with cheap top-ups means the bonus stretches to roughly the same
+     * number of questions, and the price they learn is the one they will keep
+     * paying once earning has caught up.
+     */
+    newUserQuota: Number(process.env.AI_NEW_USER_QUOTA ?? 10),
+    /** How long an account counts as new, for both the quota and the price. */
+    newUserDays: Number(process.env.AI_NEW_USER_DAYS ?? 7),
     timeoutMs: Number(process.env.AI_TIMEOUT_MS ?? 20000),
   }),
 
@@ -224,6 +238,21 @@ const config = Object.freeze({
    *    See `referralService` for the guards that follow from this.
    */
   referral: referralConfig,
+
+  ledger: Object.freeze({
+    /**
+     * Copy a signed-in person's share of a group expense into their personal
+     * ledger (docs/08-PERSONAL-LEDGER.md §12).
+     *
+     * A switch because it writes into private data as a side effect of a group
+     * action. It is on by default — a personal spending record that silently
+     * omits the half of your life you split with other people is not much of a
+     * record — but an operator who considers that too surprising can turn it off
+     * without a deployment, and nothing else changes.
+     */
+    mirrorGroupExpenses:
+      (process.env.LEDGER_MIRROR_GROUP_EXPENSES ?? "true").toLowerCase() !== "false",
+  }),
 });
 
 module.exports = config;

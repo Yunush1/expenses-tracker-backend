@@ -242,6 +242,17 @@ const describeLedger = async (userId) => {
         category: e.category || undefined,
         thisMonth: new Date(e.occurredAt) >= since,
         note: e.notes || undefined,
+        /**
+         * Present only on rows mirrored from a group expense — this person's
+         * share of a bill that also appears under `groups` below.
+         *
+         * Named and flagged rather than filtered out because both readings are
+         * legitimate: "what did I spend this month" should include it, "what do I
+         * owe in Goa" should not. The model is told the relationship (see the
+         * system prompt) so it can pick, instead of being handed a number that is
+         * silently one or the other.
+         */
+        fromGroup: e.sourceGroupName || undefined,
       })),
   };
 };

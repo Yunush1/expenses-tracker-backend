@@ -10,8 +10,10 @@ const { ok } = require("../utils/apiResponse");
  * money by editing a request.
  */
 
+// The whole user, not just the id: the free allowance and the point price both
+// depend on how old the account is (docs/10-AI-ASSISTANT.md §5).
 exports.getStatus = asyncHandler(async (req, res) =>
-  ok(res, await assistantService.status(req.user._id))
+  ok(res, await assistantService.status(req.user))
 );
 
 /**
@@ -27,7 +29,7 @@ exports.ask = asyncHandler(async (req, res) =>
   ok(
     res,
     await assistantService.ask(
-      req.user._id,
+      req.user,
       req.body.question,
       { question: req.body.previousQuestion, answer: req.body.previousAnswer },
       // Everything asked this session, so a follow-up is never offered twice.
