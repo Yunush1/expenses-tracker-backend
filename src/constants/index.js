@@ -1,5 +1,10 @@
 /** Shared enums, limits and error codes. Single source of truth for both layers. */
 
+// The only import here, and only for the referral levels — which are deliberately
+// operator-tunable, so they cannot be literals in this file. config/env pulls in
+// nothing from here, so there is no cycle.
+const config = require("../config/env");
+
 const GROUP_STATUS = Object.freeze({
   ACTIVE: "ACTIVE",
   ARCHIVED: "ARCHIVED",
@@ -85,7 +90,7 @@ const LEDGER_CATEGORIES = Object.freeze([
  * *day*, not for each row — paying per row is a standing incentive to create
  * rows, and in a shared group that silently distorts what everyone else owes.
  */
-const POINT_EVENT_TYPES = Object.freeze({
+const BASE_POINT_EVENT_TYPES = {
   /** At least one expense or ledger entry today. Once daily, however many. */
   ACTIVE_DAY: "ACTIVE_DAY",
   /** Closed a debt — the loop that actually matters. */
@@ -98,8 +103,29 @@ const POINT_EVENT_TYPES = Object.freeze({
   FIRST_GROUP: "FIRST_GROUP",
   FIRST_LEDGER_ENTRY: "FIRST_LEDGER_ENTRY",
   NOTIFICATIONS_ENABLED: "NOTIFICATIONS_ENABLED",
+  /** A brand new account's opening balance, so Ria works on day one. */
+  WELCOME_BONUS: "WELCOME_BONUS",
+  /** The invitee's half of a referral — for arriving through someone's link. */
+  REFERRAL_JOINED: "REFERRAL_JOINED",
   /** Negative. The only sink in v1. */
   SPEND_AI_QUESTION: "SPEND_AI_QUESTION",
+};
+
+/**
+ * `REFERRAL_L1`, `REFERRAL_L2`, … one per configured level.
+ *
+ * Generated rather than written out because the depth is an operator setting: a
+ * fixed list of three would silently ignore a fourth level, and the mismatch
+ * would only show up as referrals quietly not paying. `REFERRAL_LEVELS=50`
+ * yields a flat one-level scheme and no `REFERRAL_L2` type ever exists.
+ */
+const REFERRAL_LEVEL_TYPES = Object.freeze(
+  config.referral.levels.map((_, index) => `REFERRAL_L${index + 1}`)
+);
+
+const POINT_EVENT_TYPES = Object.freeze({
+  ...BASE_POINT_EVENT_TYPES,
+  ...Object.fromEntries(REFERRAL_LEVEL_TYPES.map((type) => [type, type])),
 });
 
 /** Point values and how often each may be earned. Amounts of money never feature. */
@@ -114,6 +140,33 @@ const POINT_RULES = Object.freeze({
   [POINT_EVENT_TYPES.FIRST_GROUP]: { points: 25, once: true },
   [POINT_EVENT_TYPES.FIRST_LEDGER_ENTRY]: { points: 25, once: true },
   [POINT_EVENT_TYPES.NOTIFICATIONS_ENABLED]: { points: 25, once: true },
+  [POINT_EVENT_TYPES.WELCOME_BONUS]: { points: config.referral.welcomeBonus, once: true },
+  [POINT_EVENT_TYPES.REFERRAL_JOINED]: { points: config.referral.joinBonus, once: true },
+
+  /**
+   * One rule per configured level.
+   *
+   * `uncapped` because these must not be metered by `DAILY_EARN_CAP`: someone who
+   * logs an expense, settles a debt and then has two friends join should not find
+   * the friends silently worthless because the day's ordinary allowance was
+   * already spent. They are bounded instead by `perDay` — a tighter, more
+   * targeted limit, since this is the rule most worth attacking.
+   *
+   * `key: "subject"` marks the dedupe as per-*referred-person* rather than
+   * per-day: the same friend qualifying can never pay out twice, however long
+   * ago they joined.
+   */
+  ...Object.fromEntries(
+    REFERRAL_LEVEL_TYPES.map((type, index) => [
+      type,
+      {
+        points: config.referral.levels[index],
+        perDay: config.referral.dailyCap,
+        uncapped: true,
+        key: "subject",
+      },
+    ])
+  ),
 });
 
 const POINTS = Object.freeze({
@@ -243,6 +296,7 @@ module.exports = {
   POINT_EVENT_TYPES,
   POINT_RULES,
   POINTS,
+  REFERRAL_LEVEL_TYPES,
   SPLIT_TYPES,
   SPLIT_VALUE_UNITS,
   SETTLEMENT_METHODS,

@@ -1,5 +1,6 @@
 const User = require("../models/user");
 const PushToken = require("../models/pushToken");
+const { POINT_EVENT_TYPES } = require("../constants");
 const logger = require("../utils/logger");
 
 /**
@@ -43,7 +44,11 @@ const profileDiffers = (user, claims) =>
   user.phoneNumber !== (claims.phone_number || "") ||
   user.signInProvider !== (claims.firebase?.sign_in_provider || "");
 
-const upsertFromClaims = async (claims) => {
+/**
+ * @param context.referralCode  the invite code this browser arrived with, if any
+ * @param context.deviceId      the browser making the request
+ */
+const upsertFromClaims = async (claims, context = {}) => {
   const existing = await User.findOne({ firebaseUid: claims.uid });
 
   /**
@@ -67,11 +72,55 @@ const upsertFromClaims = async (claims) => {
     lastSeenAt: new Date(),
   };
 
-  return User.findOneAndUpdate(
+  /**
+   * The referrer, resolved **only** when this request is about to create the row.
+   *
+   * `referredBy` goes in `$setOnInsert`, which is the whole design: it is written
+   * at account creation and by nothing else, ever. An existing user sending an
+   * invite code — deliberately or because it is still sitting in their
+   * localStorage — changes nothing, and there is no other endpoint that can.
+   *
+   * Resolution is skipped entirely for known users so the common path stays one
+   * query, and a rejected code (unknown, or the referrer's own browser) simply
+   * yields null rather than failing the sign-in.
+   */
+  const setOnInsert = { firebaseUid: claims.uid };
+
+  if (!existing && context.referralCode) {
+    // eslint-disable-next-line global-require -- referralService reads User back
+    const referralService = require("./referralService");
+    const referrerId = await referralService.resolveReferrer(
+      context.referralCode,
+      context.deviceId
+    );
+    if (referrerId) setOnInsert.referredBy = referrerId;
+  }
+
+  const user = await User.findOneAndUpdate(
     { firebaseUid: claims.uid },
-    { $set: update, $setOnInsert: { firebaseUid: claims.uid } },
+    { $set: update, $setOnInsert: setOnInsert },
     { new: true, upsert: true, setDefaultsOnInsert: true }
   );
+
+  /**
+   * The welcome bonus — for genuinely new accounts only.
+   *
+   * `existing` was fetched before the upsert, so its absence is what "new" means
+   * here; the award itself is once-ever, so a race between two first requests
+   * still credits one bonus. Unawaited, because a points failure must not delay
+   * or fail a sign-in.
+   */
+  if (!existing) {
+    // eslint-disable-next-line global-require -- avoids a load-order dependency
+    const pointsService = require("./pointsService");
+    pointsService
+      .award(user._id, POINT_EVENT_TYPES.WELCOME_BONUS, {
+        referred: Boolean(setOnInsert.referredBy),
+      })
+      .catch(() => {});
+  }
+
+  return user;
 };
 
 /**
@@ -142,6 +191,12 @@ const toProfileDTO = (user) => ({
   phoneNumber: user.phoneNumber,
   signInProvider: user.signInProvider,
   createdAt: user.createdAt,
+  /**
+   * A boolean, not the referrer's id: the client only needs to know whether the
+   * invite code it is holding has already been used, so it can stop sending it.
+   * Who invited whom is nobody else's business, including the invitee's.
+   */
+  referred: Boolean(user.referredBy),
 });
 
 module.exports = { upsertFromClaims, linkDevice, toProfileDTO };

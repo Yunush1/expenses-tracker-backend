@@ -102,8 +102,64 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+
+    /**
+     * This account's own invite code — the thing that goes in a shared link.
+     *
+     * Assigned lazily, on first request for it, rather than at sign-up: most
+     * accounts never share anything, and an unused code is a unique index entry
+     * and a collision-retry loop paid for nothing. `sparse` is what makes that
+     * possible — without it every user missing a code would collide on `null`.
+     */
+    /**
+     * Note the deliberate absence of `default: null`. A default is *written*, so
+     * every account would carry an explicit `referralCode: null` — and a sparse
+     * index skips missing fields, not null ones. The index would then treat null
+     * as a value, and the second account to exist would collide with the first.
+     *
+     * Left undefined, the field is simply absent until a code is allocated, which
+     * is what makes the unique index affordable. Queries are unaffected:
+     * `{ referralCode: null }` matches missing and null alike.
+     */
+    referralCode: {
+      type: String,
+      uppercase: true,
+      trim: true,
+    },
+
+    /**
+     * Who invited this person. Written **once**, when the account row is created,
+     * and never again.
+     *
+     * Immutability is the whole security property. If this could be set later,
+     * every account in the system would be a standing target for "attach yourself
+     * to me" — and the natural version of that (a `POST /referrals/claim` anyone
+     * can call) would let one operator harvest the entire existing user base into
+     * their downline overnight. There is no code path that updates this field;
+     * see referralService.
+     */
+    referredBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+
+    /**
+     * When this person first did something real — not when they signed up.
+     *
+     * The upline is paid at this moment, once, and this field is the latch that
+     * makes "once" true: it is set by a conditional update that only matches while
+     * it is still null, so two concurrent qualifying events cannot both pay out.
+     */
+    referralQualifiedAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );
+
+userSchema.index({ referralCode: 1 }, { unique: true, sparse: true });
+userSchema.index({ referredBy: 1 });
 
 module.exports = mongoose.model("User", userSchema);

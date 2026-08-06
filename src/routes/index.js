@@ -5,6 +5,7 @@ const authRoutes = require("./authRoutes");
 const ledgerRoutes = require("./ledgerRoutes");
 const aiRoutes = require("./aiRoutes");
 const pointsRoutes = require("./pointsRoutes");
+const referralRoutes = require("./referralRoutes");
 
 const router = express.Router();
 
@@ -30,5 +31,7 @@ router.use("/ledger", ledgerRoutes);
 router.use("/ai", aiRoutes);
 /** Reward points — earned from domain events, spent on Ria (docs/11-REWARDS.md). */
 router.use("/points", pointsRoutes);
+/** Invite links and their multi-level rewards (docs/12-REFERRALS.md). */
+router.use("/referrals", referralRoutes);
 
 module.exports = router;

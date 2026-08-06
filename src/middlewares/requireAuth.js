@@ -186,7 +186,22 @@ const requireAuth = async (req, res, next) => {
      * they would do, successfully, and land on the same error: an infinite loop
      * that also hides the real fault from whoever is on call.
      */
-    req.user = await authService.upsertFromClaims(claims);
+    /**
+     * The invite code, if this browser landed on a shared link before signing in.
+     *
+     * A header rather than a body field because the account is created by
+     * whichever authenticated request happens to arrive first, which is not
+     * knowable from here — a dedicated "register with a code" endpoint would only
+     * work if the client could guarantee calling it before anything else.
+     *
+     * It is read on every request and acted on by none of them except the one
+     * that inserts the row (see authService), so a stale code left in a client's
+     * storage is inert.
+     */
+    req.user = await authService.upsertFromClaims(claims, {
+      referralCode: req.get("X-Referral-Code") || "",
+      deviceId: req.deviceId,
+    });
 
     /**
      * `deviceContext` has already run globally, so `req.deviceId` is available

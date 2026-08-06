@@ -33,6 +33,82 @@ const parseOrigins = (raw) =>
     .map((origin) => origin.trim())
     .filter(Boolean);
 
+/** The hard ceiling on referral depth, whatever the environment asks for. */
+const MAX_REFERRAL_DEPTH = 5;
+
+/**
+ * `"50,25,12.5"` → `[50, 25, 12.5]`. Falls back to the default on anything
+ * unusable, because a typo here must not silently switch referrals off — or,
+ * worse, leave one level paying `NaN` points.
+ */
+const parsePercents = (raw, fallback) => {
+  const parsed = (raw || "")
+    .split(",")
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .slice(0, MAX_REFERRAL_DEPTH);
+
+  if (parsed.length === 0) {
+    if (raw?.trim()) {
+      logger.warn(`[config] REFERRAL_LEVEL_PERCENTS="${raw}" is unusable — using the default`);
+    }
+    return Object.freeze([...fallback]);
+  }
+
+  return Object.freeze(parsed);
+};
+
+/**
+ * Resolved once, before `config`, because `levels` is derived from two other
+ * settings — a getter would recompute (and re-freeze) the array on every read,
+ * and this is consulted on the hot path of awarding points.
+ */
+const referralConfig = (() => {
+  const basePoints = Math.max(1, Number(process.env.REFERRAL_BASE_POINTS ?? 100));
+  const percents = parsePercents(process.env.REFERRAL_LEVEL_PERCENTS, [50, 25, 10]);
+
+  const total = percents.reduce((sum, percent) => sum + percent, 0);
+  if (total > 100) {
+    // Not refused: an operator may genuinely want to pay out more than the pot.
+    // But it is almost always a typo, and the cost lands on the AI bill.
+    logger.warn(
+      `[config] REFERRAL_LEVEL_PERCENTS sums to ${total}% — one referral now pays out ` +
+      `more than REFERRAL_BASE_POINTS (${basePoints})`
+    );
+  }
+
+  return Object.freeze({
+    enabled: (process.env.REFERRAL_ENABLED ?? "true").toLowerCase() !== "false",
+    /** What one qualified referral is worth in total, before the split. */
+    basePoints,
+    /**
+     * The split, by depth. `50,25,12.5,6.25` is strict halving; `50,25,10` is the
+     * default. Capped at five levels regardless of what is configured.
+     */
+    percents,
+    /**
+     * The percentages resolved to whole points.
+     *
+     * Points are integers — a third of a question is not a thing — so each level
+     * is rounded, with a floor of 1 so that a small percentage of a small pot
+     * degrades to "a little" rather than silently to nothing.
+     */
+    levels: Object.freeze(
+      percents.map((percent) => Math.max(1, Math.round((basePoints * percent) / 100)))
+    ),
+    /**
+     * Qualified referrals that may be credited to one account per day, per level.
+     * The ceiling on how fast a leak can drain: at the defaults, a compromised or
+     * industrious account earns at most 5 × 50 points a day from level one.
+     */
+    dailyCap: Math.max(1, Number(process.env.REFERRAL_DAILY_CAP ?? 5)),
+    /** Given once, to a genuinely new account. */
+    welcomeBonus: Math.max(0, Number(process.env.REFERRAL_WELCOME_BONUS ?? 50)),
+    /** Extra, once, for arriving through someone's link — the invitee's half. */
+    joinBonus: Math.max(0, Number(process.env.REFERRAL_JOIN_BONUS ?? 25)),
+  });
+})();
+
 const config = Object.freeze({
   env: NODE_ENV,
   isProduction: NODE_ENV === "production",
@@ -109,6 +185,45 @@ const config = Object.freeze({
     dailyQuota: Number(process.env.AI_DAILY_QUOTA ?? 20),
     timeoutMs: Number(process.env.AI_TIMEOUT_MS ?? 20000),
   }),
+
+  /**
+   * Referral rewards (docs/12-REFERRALS.md).
+   *
+   * ## How a referral is priced
+   *
+   * One qualified referral is worth `basePoints` — a pot — and each level of the
+   * upline takes a percentage of it. `REFERRAL_LEVEL_PERCENTS=50,25,12.5` with
+   * the default pot of 100 means:
+   *
+   * > U5 joins on U4's link and starts using the app.
+   * > U4 (who invited them) earns 50% → 50 points.
+   * > U3 (who invited U4) earns 25% → 25 points.
+   * > U2 (who invited U3) earns 12.5% → 13 points.
+   * > U1 earns nothing: the list has three entries, so the chain is three deep.
+   *
+   * Percentages rather than absolute values because that is the shape the
+   * decision actually has — "half of a referral goes to the person who made it"
+   * survives a change to how much a referral is worth, whereas three absolute
+   * numbers have to be re-derived every time and quietly drift out of proportion.
+   * Repricing the whole scheme is one number, `REFERRAL_BASE_POINTS`.
+   *
+   * The length of the list **is** the depth. There is no separate depth setting
+   * to fall out of step with it, and five is the hard ceiling regardless.
+   *
+   * Two properties of this design are load-bearing rather than cosmetic:
+   *
+   * 1. **The currency is closed.** Points buy AI questions inside the app. They
+   *    cannot be bought, sold, transferred or withdrawn, and nothing in the
+   *    product costs money to unlock. That is what separates a referral reward
+   *    from a compensation plan, and it is why the depth here is safe to make
+   *    configurable. If points ever become withdrawable, this is not a setting to
+   *    turn up — it is a different product with a different legal shape.
+   * 2. **Points cost the operator money.** Each one is a fraction of an AI call.
+   *    Referral fraud is therefore not a leaderboard problem, it is a billing
+   *    problem — hence `dailyCap`, hence rewarding activity rather than signups.
+   *    See `referralService` for the guards that follow from this.
+   */
+  referral: referralConfig,
 });
 
 module.exports = config;

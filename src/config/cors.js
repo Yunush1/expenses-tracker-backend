@@ -73,7 +73,7 @@ const corsOptions = {
    * attached only when someone is signed in, which is why forgetting it produced
    * a failure that came and went with sign-in state rather than a consistent one.
    */
-  allowedHeaders: ["Content-Type", "X-Device-Id", "Authorization"],
+  allowedHeaders: ["Content-Type", "X-Device-Id", "Authorization", "X-Referral-Code"],
   // Bearer tokens, not cookies — so the browser never needs to send credentials.
   credentials: false,
 };

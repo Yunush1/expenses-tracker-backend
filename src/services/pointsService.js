@@ -30,9 +30,15 @@ const logger = require("../utils/logger");
 /** `YYYY-MM-DD` in UTC. Day boundaries only decide *when* a rule resets. */
 const dayKey = (date = new Date()) => date.toISOString().slice(0, 10);
 
-const keyFor = (userId, type, day) => {
+const keyFor = (userId, type, day, subject) => {
   const rule = POINT_RULES[type];
   if (!rule) return undefined;
+  /**
+   * Rules keyed on a *subject* — referrals. The bound is "once per person you
+   * introduced", which is neither per-day nor once-ever: the same friend must
+   * never pay twice, but a different friend always may.
+   */
+  if (rule.key === "subject") return subject ? `${userId}:${type}:${subject}` : undefined;
   // Once-ever rules key on the type alone; daily rules include the date.
   if (rule.once) return `${userId}:${type}`;
   if (rule.perDay === 1) return `${userId}:${type}:${day}`;
@@ -41,13 +47,16 @@ const keyFor = (userId, type, day) => {
 };
 
 /**
- * Positive points earned today from **repeatable** rules.
+ * Positive points earned today from rules the daily ceiling governs.
  *
- * Once-ever awards are excluded from the total as well as from the check, so a
- * first-group bonus does not eat into the day's allowance for ordinary earning.
+ * Two kinds are excluded, from the total as well as from the check. Once-ever
+ * awards, because they are already bounded by being once-ever — a first-group
+ * bonus should not eat into the day's allowance for ordinary earning. And rules
+ * marked `uncapped`, currently the referral levels, which carry their own
+ * tighter per-day limit for reasons the general cap was never designed to serve.
  */
-const ONCE_TYPES = Object.entries(POINT_RULES)
-  .filter(([, rule]) => rule.once)
+const UNCAPPED_TYPES = Object.entries(POINT_RULES)
+  .filter(([, rule]) => rule.once || rule.uncapped)
   .map(([type]) => type);
 
 const earnedToday = async (userId, day) => {
@@ -59,7 +68,7 @@ const earnedToday = async (userId, day) => {
       $match: {
         userId: new mongoose.Types.ObjectId(String(userId)),
         points: { $gt: 0 },
-        type: { $nin: ONCE_TYPES },
+        type: { $nin: UNCAPPED_TYPES },
         createdAt: { $gte: start, $lte: end },
       },
     },
@@ -84,9 +93,13 @@ const countToday = async (userId, type, day) =>
  * Award points for a domain event.
  *
  * Returns the created row, or null when the rule did not fire — already earned
- * today, already earned ever, or the daily ceiling is reached. Never throws.
+ * today, already earned ever, already earned for this subject, or the daily
+ * ceiling is reached. Never throws.
+ *
+ * @param options.subject  for referral rules: the person whose action earned it,
+ *                         so the same friend can never pay out twice
  */
-const award = async (userId, type, metadata = {}) => {
+const award = async (userId, type, metadata = {}, options = {}) => {
   try {
     if (!userId) return null;
 
@@ -94,7 +107,13 @@ const award = async (userId, type, metadata = {}) => {
     if (!rule) return null;
 
     const day = dayKey();
-    const dedupeKey = keyFor(userId, type, day);
+    const dedupeKey = keyFor(userId, type, day, options.subject);
+
+    /**
+     * A subject-keyed rule with no subject would fall through to an unkeyed
+     * insert and lose its only dedupe — refuse rather than pay out unbounded.
+     */
+    if (rule.key === "subject" && !dedupeKey) return null;
 
     /**
      * Already earned — checked before attempting the write.
@@ -118,20 +137,46 @@ const award = async (userId, type, metadata = {}) => {
      * someone loses the reward for a 30-day streak because they happened to
      * settle two debts the same afternoon — silently, with nothing to explain
      * it. The cap exists to bound the repeatable rules, and that is all it
-     * should do.
+     * should do. Referral levels are exempt for a different reason and carry
+     * their own limit instead; see `UNCAPPED_TYPES`.
      */
-    if (!rule.once) {
+    if (!rule.once && !rule.uncapped) {
       const already = await earnedToday(userId, day);
       if (already + rule.points > POINTS.DAILY_EARN_CAP) return null;
     }
 
-    // Repeatable-within-a-day rules have no dedupe key, so they are bounded here.
+    /**
+     * The per-day count. For ordinary repeatable rules this is what bounds them
+     * at all, since they have no dedupe key. For referral levels the key already
+     * prevents double-paying one person — this is the separate limit on *how
+     * many* people may pay out in a day, which is the rate a leak would drain at.
+     */
     if (!rule.once && rule.perDay > 1) {
       const used = await countToday(userId, type, day);
       if (used >= rule.perDay) return null;
     }
 
-    return await PointEvent.create({ userId, type, points: rule.points, metadata, dedupeKey });
+    const event = await PointEvent.create({
+      userId,
+      type,
+      points: rule.points,
+      metadata,
+      dedupeKey,
+    });
+
+    /**
+     * A first day of real use is what pays somebody's referral — not the signup.
+     * Fired from here, the one place every `ACTIVE_DAY` passes through, so a
+     * future earning hook cannot forget it. Lazily required and unawaited: the
+     * referral walk must not sit in front of the expense that triggered it, and
+     * referralService reads this module back.
+     */
+    if (type === POINT_EVENT_TYPES.ACTIVE_DAY) {
+      // eslint-disable-next-line global-require -- mutual dependency, see above
+      require("./referralService").qualify(userId).catch(() => {});
+    }
+
+    return event;
   } catch (err) {
     /**
      * A duplicate key is the mechanism working, not a failure: two concurrent
