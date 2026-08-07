@@ -21,7 +21,8 @@
     "nudge:test": "cross-env NODE_ENV=development node scripts/send-test-nudge.js",
     "nudge:dry": "cross-env NODE_ENV=development node scripts/send-test-nudge.js --dry",
     "tunel": "cross-env NODE_ENV=development node server.js --tunel",
-    "date:check": "cross-env NODE_ENV=development node scripts/check-expense-date.js"
+    "date:check": "cross-env NODE_ENV=development node scripts/check-expense-date.js",
+    "recovery:check": "cross-env NODE_ENV=development node scripts/check-group-recovery.js"
   },
   "keywords": [
     "expense",

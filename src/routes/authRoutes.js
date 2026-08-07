@@ -20,4 +20,14 @@ router.get("/status", authController.getStatus);
 
 router.get("/me", requireAuth, authController.getMe);
 
+/**
+ * Recovering group access after clearing browser storage.
+ *
+ * The account is the proof: a member row carrying a device id that belongs to
+ * this account, and to no other, was used by a browser this person was signed
+ * into. Ambiguous devices are skipped and fall back to asking a member.
+ */
+router.get("/groups/recoverable", requireAuth, authController.getRecoverableGroups);
+router.post("/groups/restore", requireAuth, authController.restoreGroups);
+
 module.exports = router;

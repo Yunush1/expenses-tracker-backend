@@ -63,6 +63,53 @@ const joinGroup = async ({ group, name, deviceId }) => {
 };
 
 /**
+ * Attach a browser to a member that already has one — an approved recovery.
+ *
+ * Separate from `claimMember` on purpose. That one refuses a member whose device
+ * list is non-empty, which is the right answer to "somebody else is already using
+ * this name" and the wrong answer to "that somebody is me, and I cleared my
+ * browser". The difference between those two is a fact only another human knows,
+ * so this is reachable **only** through an approved join request — never from a
+ * request a client can make on its own behalf (docs/13-JOIN-APPROVAL.md §11).
+ *
+ * @param replaceExisting drop the member's other devices. True for a recovery,
+ *   where the old id belongs to storage that no longer exists; a second working
+ *   device should use the link-code flow instead, which keeps both.
+ */
+const attachDevice = async ({ group, memberId, deviceId, replaceExisting = false }) => {
+  const member = await memberRepository.findById(group._id, memberId);
+
+  if (!member || !member.isActive) {
+    throw new NotFoundError("Member not found", ERROR_CODES.MEMBER_NOT_FOUND);
+  }
+
+  // One device maps to exactly one member, or resolveMember becomes ambiguous.
+  const previous = await memberRepository.findByDevice(group._id, deviceId);
+  if (previous && String(previous._id) !== String(member._id)) {
+    await memberRepository.removeDevice(group._id, previous._id, deviceId);
+  }
+
+  if (replaceExisting) {
+    for (const stale of devicesOf(member).filter((id) => id !== deviceId)) {
+      // eslint-disable-next-line no-await-in-loop -- at most a handful
+      await memberRepository.removeDevice(group._id, member._id, stale);
+    }
+  }
+
+  const updated = await memberRepository.addDevice(group._id, member._id, deviceId);
+
+  await activityService.record({
+    groupId: group._id,
+    type: ACTIVITY_TYPES.DEVICE_LINKED,
+    actor: updated,
+    message: `${updated.name} got back in from a new device`,
+    metadata: { memberId: String(updated._id), recovered: replaceExisting },
+  });
+
+  return toMemberDTO(updated, updated._id);
+};
+
+/**
  * Binds an existing device-less member to this browser. Covers both "someone
  * added me by name" and "I cleared my browser data and lost my identity".
  */
@@ -455,6 +502,7 @@ const buildNameMap = async (groupId) => {
 
 module.exports = {
   listMembers,
+  attachDevice,
   joinGroup,
   claimMember,
   createDeviceLinkCode,

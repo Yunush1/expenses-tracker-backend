@@ -130,6 +130,17 @@ router.post(
   joinRequestController.decide
 );
 
+/**
+ * Recovering an identity after clearing browser storage. Creates a request that a
+ * member answers — never a claim this browser can complete on its own.
+ */
+router.post(
+  "/:inviteCode/members/:memberId/claim-request",
+  writeLimiter,
+  requireActiveGroup,
+  joinRequestController.claimMember
+);
+
 /* ---------------------------- Sub-resources ------------------------------ */
 
 router.use("/:inviteCode/members", memberRoutes);

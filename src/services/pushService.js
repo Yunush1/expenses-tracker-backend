@@ -225,7 +225,7 @@ const registerToken = async ({ deviceId, token, userAgent, timeZone }) => {
  * one multicast, which is the cost of the buttons working; a join request is rare
  * and a group is at most fifty people.
  */
-const notifyJoinRequest = async ({ group, joinRequest }) => {
+const notifyJoinRequest = async ({ group, joinRequest, isClaim = false }) => {
   try {
     if (!isPushEnabled()) return null;
 
@@ -251,7 +251,11 @@ const notifyJoinRequest = async ({ group, joinRequest }) => {
         token: row.token,
         data: {
           title: group.name,
-          body: `${joinRequest.name} wants to join`,
+          // A recovery and a new join are different questions, and the person
+          // tapping Accept on a lock screen deserves to know which one it is.
+          body: isClaim
+            ? `${joinRequest.name} is trying to get back in from a new device`
+            : `${joinRequest.name} wants to join`,
           type: "JOIN_REQUEST",
           groupName: group.name,
           inviteCode: group.inviteCode,

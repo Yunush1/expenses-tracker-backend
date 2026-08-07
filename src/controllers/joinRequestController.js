@@ -25,6 +25,26 @@ exports.createRequest = asyncHandler(async (req, res) => {
   return created(res, result);
 });
 
+/**
+ * "That's me, I lost my browser." — a recovery request, not a new join.
+ *
+ * Unauthenticated like the join request above, and for the same reason: this
+ * browser is not yet anybody in the group. What makes it safe is that it only
+ * creates a *request* (docs/13-JOIN-APPROVAL.md §11).
+ */
+exports.claimMember = asyncHandler(async (req, res) =>
+  created(
+    res,
+    await joinRequestService.requestClaim({
+      group: req.group,
+      memberId: req.params.memberId,
+      deviceId: req.deviceId,
+      userAgent: req.get("User-Agent") || "",
+    }),
+    "Waiting for a member to confirm"
+  )
+);
+
 exports.getStatus = asyncHandler(async (req, res) =>
   ok(
     res,

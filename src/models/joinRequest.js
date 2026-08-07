@@ -66,6 +66,26 @@ const joinRequestSchema = new mongoose.Schema(
       ref: "Member",
       default: null,
     },
+
+    /**
+     * Set when this is a **recovery**, not a new join: "I am Riya, I cleared my
+     * browser and lost my identity."
+     *
+     * It has to be a request rather than a self-service action for the same
+     * reason a join does. From the server's side, "I am Riya" arriving from an
+     * unknown browser is indistinguishable from anyone else with the invite link
+     * saying it — and the invite link is shared in a group chat. Letting it
+     * through unchallenged would let any member take over any other member's
+     * identity, their expenses and their balance.
+     *
+     * A person who already knows Riya is the only thing that can tell the two
+     * apart, so a person is asked (docs/13-JOIN-APPROVAL.md §11).
+     */
+    claimMemberId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Member",
+      default: null,
+    },
     /**
      * A request nobody answers must not stay answerable forever — an approval tap
      * a week later, on a notification still sitting in a tray, would let in

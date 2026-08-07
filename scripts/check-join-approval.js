@@ -12,6 +12,7 @@ const mongoose = require("mongoose");
 const { connectDB } = require("../src/config/db");
 const groupService = require("../src/services/groupService");
 const joinRequestService = require("../src/services/joinRequestService");
+const memberService = require("../src/services/memberService");
 const JoinRequest = require("../src/models/joinRequest");
 const Group = require("../src/models/group");
 const Member = require("../src/models/member");
@@ -250,6 +251,73 @@ const check = (label, actual, want) =>
   }).catch(() => ({ alreadyDecided: true }));
   check("an expired request cannot be approved", stale.alreadyDecided || staleTapRefused, true);
   check("still two members", await Member.countDocuments({ groupId: group._id }), 2);
+
+  console.log("\n--- THE CLEARED-STORAGE CASE ---");
+  // Riya joins on her browser, then wipes its storage.
+  const riyaDevice = `riya-${stamp}`;
+  const riyaAsk = await joinRequestService.request({
+    code: joinCode,
+    name: "Riya",
+    deviceId: riyaDevice,
+  });
+  await joinRequestService.decide({ group, actor: owner, requestId: riyaAsk.id, approve: true });
+  const riya = await Member.findOne({ groupId: group._id, name: "Riya" });
+  check("Riya is in, on her browser", (riya.deviceIds || []).includes(riyaDevice), true);
+
+  // A cleared browser means a brand new device id; her row still lists the dead one.
+  const newDevice = `riya-new-${stamp}`;
+
+  console.log("\n--- the old path is a dead end, which is the bug ---");
+  let deadEnd = "";
+  try {
+    await memberService.claimMember({ group, memberId: riya._id, deviceId: newDevice });
+  } catch (err) {
+    deadEnd = err.code;
+  }
+  check("claimMember refuses her own row", deadEnd, "ALREADY_CLAIMED");
+
+  console.log("\n--- the recovery request is the way through ---");
+  const claim = await joinRequestService.requestClaim({
+    group,
+    memberId: riya._id,
+    deviceId: newDevice,
+  });
+  check("a request is created", claim.status, JOIN_REQUEST_STATUS.PENDING);
+  check("it carries her name", claim.name, "Riya");
+  check(
+    "nothing has changed yet",
+    (await Member.findById(riya._id)).deviceIds.includes(newDevice),
+    false
+  );
+
+  const membersBefore = await Member.countDocuments({ groupId: group._id });
+  await joinRequestService.decide({ group, actor: owner, requestId: claim.id, approve: true });
+
+  const recovered = await Member.findById(riya._id);
+  check("the new browser is now hers", (recovered.deviceIds || []).includes(newDevice), true);
+  check("the dead device was dropped", (recovered.deviceIds || []).includes(riyaDevice), false);
+  check(
+    "no duplicate member was created",
+    await Member.countDocuments({ groupId: group._id }),
+    membersBefore
+  );
+  check("same row, so her expenses follow her", String(recovered._id), String(riya._id));
+  check("and her name is unchanged", recovered.name, "Riya");
+
+  console.log("\n--- a stranger cannot take an identity unanswered ---");
+  const imposter = await joinRequestService.requestClaim({
+    group,
+    memberId: riya._id,
+    deviceId: `imposter-${stamp}`,
+  });
+  check("it is only a request", imposter.status, JOIN_REQUEST_STATUS.PENDING);
+  const stillHers = await Member.findById(riya._id);
+  check("her device is untouched", (stillHers.deviceIds || []).includes(newDevice), true);
+  check(
+    "and the imposter has nothing",
+    (stillHers.deviceIds || []).some((id) => id.startsWith("imposter")),
+    false
+  );
 
   console.log("\n--- cleanup ---");
   await JoinRequest.deleteMany({ groupId: group._id });

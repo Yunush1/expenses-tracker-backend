@@ -181,6 +181,76 @@ const request = async ({ code, inviteCode, group: preloaded, name, deviceId, use
   return { ...toDTO(created, group), pending: true };
 };
 
+/**
+ * "That's me — I lost my browser."
+ *
+ * ## Why this exists at all
+ *
+ * A `deviceId` lives in `localStorage`, and "clear site data" takes it with
+ * everything else. There is no corner of a browser that survives that, and no
+ * stable device identifier the web will give us — so a returning member arrives
+ * as a stranger, and their old row still lists the dead device.
+ *
+ * `memberService.claimMember` refuses that row precisely because it looks taken,
+ * which is correct for "someone else is already using this name" and useless for
+ * the case it was written for. This is the way through: ask, and let somebody who
+ * knows them answer.
+ *
+ * Approval attaches the new browser to the existing member — so the expenses they
+ * entered, the balance they carry and the name everyone knows all stay put. A new
+ * member row would have split one person into two and broken every settlement
+ * suggestion that mentions them.
+ */
+const requestClaim = async ({ group, memberId, deviceId, userAgent = "" }) => {
+  if (!deviceId) throw new ValidationError("A device id is required");
+
+  const member = await memberRepository.findById(group._id, memberId);
+  if (!member || !member.isActive) {
+    throw new NotFoundError("Member not found", ERROR_CODES.MEMBER_NOT_FOUND);
+  }
+
+  // Already this device's identity — nothing to recover.
+  const devices = [...(member.deviceIds || []), member.deviceId].filter(Boolean);
+  if (devices.includes(deviceId)) {
+    return { status: JOIN_REQUEST_STATUS.APPROVED, inviteCode: group.inviteCode, alreadyMine: true };
+  }
+
+  let created;
+  try {
+    created = await JoinRequest.create({
+      groupId: group._id,
+      deviceId,
+      name: member.name,
+      claimMemberId: member._id,
+      status: JOIN_REQUEST_STATUS.PENDING,
+      expiresAt: new Date(Date.now() + ttlMs()),
+      userAgent: String(userAgent).slice(0, 300),
+    });
+  } catch (err) {
+    if (err?.code === 11000) {
+      const already = await JoinRequest.findOne({
+        groupId: group._id,
+        deviceId,
+        status: JOIN_REQUEST_STATUS.PENDING,
+      });
+      return { ...toDTO(already, group), pending: true };
+    }
+    throw err;
+  }
+
+  await activityService.record({
+    groupId: group._id,
+    type: ACTIVITY_TYPES.JOIN_REQUESTED,
+    actor: { _id: null, name: member.name },
+    message: `${member.name} is trying to get back in from a new device`,
+    metadata: { requestId: String(created._id), claim: true },
+  });
+
+  pushService.notifyJoinRequest({ group, joinRequest: created, isClaim: true }).catch(() => {});
+
+  return { ...toDTO(created, group), pending: true, claim: true };
+};
+
 /** Where the requester's own polling looks. Scoped to their device, not public. */
 const statusFor = async ({ requestId, deviceId }) => {
   const found = await JoinRequest.findOne({ _id: requestId, deviceId });
@@ -288,13 +358,36 @@ const decide = async ({ group, actor, requestId, approve }) => {
     return toDTO(claimed, group);
   }
 
-  // The ordinary join path, so a member admitted this way is identical to one who
-  // arrived by link — same validation, same limit checks, same activity entry.
-  const { member } = await memberService.joinGroup({
-    group,
-    name: claimed.name,
-    deviceId: claimed.deviceId,
-  });
+  /**
+   * A recovery reattaches the existing member; a join creates a new one.
+   *
+   * The distinction matters more than it looks: creating a fresh member for
+   * someone who already has expenses in the group would split one person into
+   * two, leaving half their spending under a name nobody recognises and every
+   * settlement suggestion mentioning both.
+   */
+  let member;
+
+  if (claimed.claimMemberId) {
+    const recovered = await memberService.attachDevice({
+      group,
+      memberId: claimed.claimMemberId,
+      deviceId: claimed.deviceId,
+      // The old device id is dead — its storage was cleared — so it is dropped
+      // rather than left to accumulate on the row forever.
+      replaceExisting: true,
+    });
+
+    member = recovered;
+  } else {
+    // The ordinary join path, so a member admitted this way is identical to one
+    // who arrived by link — same validation, same limit checks, same activity.
+    ({ member } = await memberService.joinGroup({
+      group,
+      name: claimed.name,
+      deviceId: claimed.deviceId,
+    }));
+  }
 
   claimed.memberId = member.id;
   await claimed.save();
@@ -344,6 +437,7 @@ const expireStale = async () => {
 
 module.exports = {
   request,
+  requestClaim,
   statusFor,
   listPending,
   decide,
