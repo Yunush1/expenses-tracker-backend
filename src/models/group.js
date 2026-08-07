@@ -52,6 +52,27 @@ const groupSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    /**
+     * Private: nobody joins until a member says yes (docs/13-JOIN-APPROVAL.md).
+     *
+     * Off by default, because the product's promise is a link you share and
+     * everyone is in — a group that asks permission by default is a different,
+     * slower product, and most groups are four friends who all know each other.
+     *
+     * Turning it on gates **both** ways in, the invite link included. That is the
+     * point: a link forwarded into the wrong group chat is the exact situation
+     * someone reaches for this switch to fix, and gating only the typed code
+     * would leave the bigger hole open.
+     *
+     * `default: false` is written to every new group rather than left undefined,
+     * so a query for public groups does not have to know about `$exists`. Groups
+     * created before this field existed read as `undefined`, which is falsy —
+     * they stay public, which is what they already were.
+     */
+    isPrivate: {
+      type: Boolean,
+      default: false,
+    },
     status: {
       type: String,
       enum: Object.values(GROUP_STATUS),

@@ -102,15 +102,29 @@ const lookupByJoinCode = async (code, deviceId) => {
   }
 
   /**
-   * Already a member on this browser — approval would be theatre. This is the one
-   * path that still hands the invite code back from a short code, and it requires
-   * the device to already be in the group, which a guesser's is not.
+   * Already a member on this browser — approval would be theatre. Requires the
+   * device to already be in the group, which a guesser's is not.
    */
   if (deviceId) {
     const existing = await memberRepository.findByDevice(group._id, deviceId);
     if (existing) {
       return { groupName: group.name, memberCount: group.memberCount, inviteCode: group.inviteCode };
     }
+  }
+
+  /**
+   * A public group behaves as it always has: the code resolves to the link and
+   * the normal join screen takes over.
+   *
+   * Stated plainly, because it is the residual risk the privacy switch exists to
+   * manage: for a public group, a guessed short code still reaches the group. The
+   * code is ~37 bits behind the strictest limiter in the API, which makes that
+   * expensive rather than impossible. A group that wants the guarantee rather
+   * than the odds turns on `isPrivate`, and then nothing — not the code, not the
+   * link — admits anyone without a member agreeing.
+   */
+  if (!group.isPrivate) {
+    return { groupName: group.name, memberCount: group.memberCount, inviteCode: group.inviteCode };
   }
 
   return {
@@ -236,10 +250,23 @@ const getSummary = async (group, currentMember) => {
   };
 };
 
-const updateGroup = async ({ group, actor, name, description, joinCode }) => {
+const updateGroup = async ({ group, actor, name, description, joinCode, isPrivate }) => {
   const update = {};
   if (name !== undefined) update.name = name;
   if (description !== undefined) update.description = description;
+
+  /**
+   * Turning approval on or off.
+   *
+   * It changes only who may join *next*. Existing members are untouched — locking
+   * a door does not evict the people already inside, and a switch that removed
+   * members would be a far more dangerous control than it looks.
+   */
+  let privacyChange = null;
+  if (isPrivate !== undefined && Boolean(isPrivate) !== Boolean(group.isPrivate)) {
+    update.isPrivate = Boolean(isPrivate);
+    privacyChange = update.isPrivate ? "private" : "open";
+  }
 
   /**
    * `joinCode` is three requests in one field, which is what makes it revocable:
@@ -273,12 +300,16 @@ const updateGroup = async ({ group, actor, name, description, joinCode }) => {
     groupId: group._id,
     type: ACTIVITY_TYPES.GROUP_UPDATED,
     actor,
-    message: joinCodeChange
-      ? `${actor.name} ${joinCodeChange} the group's join code`
-      : `${actor.name} updated the group details`,
+    message: privacyChange
+      ? privacyChange === "private"
+        ? `${actor.name} made the group private — new people need approval`
+        : `${actor.name} opened the group — anyone with the link can join`
+      : joinCodeChange
+        ? `${actor.name} ${joinCodeChange} the group's join code`
+        : `${actor.name} updated the group details`,
     // Never the code itself — the activity feed is readable by every member and a
     // retired code should not stay legible in it.
-    metadata: { name: updated.name, joinCodeChange },
+    metadata: { name: updated.name, joinCodeChange, privacyChange },
   });
 
   return toGroupDTO(updated);

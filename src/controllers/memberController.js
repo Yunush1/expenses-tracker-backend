@@ -1,6 +1,7 @@
 const asyncHandler = require("../middlewares/asyncHandler");
 const memberService = require("../services/memberService");
-const { ok, created } = require("../utils/apiResponse");
+const joinRequestService = require("../services/joinRequestService");
+const { ok, created, accepted } = require("../utils/apiResponse");
 
 exports.listMembers = asyncHandler(async (req, res) => {
   const members = await memberService.listMembers(req.group, req.member);
@@ -8,6 +9,30 @@ exports.listMembers = asyncHandler(async (req, res) => {
 });
 
 exports.joinGroup = asyncHandler(async (req, res) => {
+  /**
+   * A private group admits nobody without a member saying yes — including
+   * somebody holding the invite link.
+   *
+   * Gating the link is the whole reason the switch exists: a link forwarded into
+   * the wrong chat is the situation people reach for it to fix, and stopping only
+   * the typed code would leave the bigger hole open. Already-a-member on this
+   * device falls through to the normal path inside `request`, so re-opening the
+   * app never asks permission (docs/13-JOIN-APPROVAL.md §2).
+   */
+  if (req.group.isPrivate && !req.member) {
+    const pending = await joinRequestService.request({
+      group: req.group,
+      name: req.body.name,
+      deviceId: req.deviceId,
+      userAgent: req.get("User-Agent") || "",
+    });
+
+    // Already in on this browser — `request` hands the code straight back.
+    if (!pending.alreadyMember) {
+      return accepted(res, pending, "Waiting for a member to let you in");
+    }
+  }
+
   const { member, created: isNew } = await memberService.joinGroup({
     group: req.group,
     name: req.body.name,

@@ -5,6 +5,7 @@ const memberService = require("./memberService");
 const activityService = require("./activityService");
 const pushService = require("./pushService");
 const { normalizeJoinCode, isValidJoinCode } = require("../utils/joinCode");
+const config = require("../config/env");
 const {
   ACTIVITY_TYPES,
   ERROR_CODES,
@@ -32,29 +33,45 @@ const logger = require("../utils/logger");
  * product is built on.
  */
 
-/** Long enough to catch someone who was out; short enough that a stale tap fails. */
-const REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
+/** Short by design — see config/env.js `join.requestTtlMinutes`. */
+const ttlMs = () => config.join.requestTtlMinutes * 60 * 1000;
 
 /** One group's pending requests, so a stranger cannot bury it in a queue. */
 const MAX_PENDING_PER_GROUP = 20;
 
+/**
+ * The status as of *now*, not as of the last sweep.
+ *
+ * The waiting room is 15 minutes and the background sweep also runs every 15
+ * minutes, so a row can sit `PENDING` in the database for a quarter of an hour
+ * after it stopped being valid. The sweep is bookkeeping; this is the truth. Both
+ * exist because the sweep keeps the collection tidy while this keeps every read
+ * honest — and every write path re-checks `expiresAt` before acting anyway.
+ */
+const effectiveStatus = (request) => {
+  if (request.status !== JOIN_REQUEST_STATUS.PENDING) return request.status;
+  return request.expiresAt <= new Date() ? JOIN_REQUEST_STATUS.EXPIRED : request.status;
+};
+
 const toDTO = (request, group) => ({
   id: String(request._id),
   name: request.name,
-  status: request.status,
+  status: effectiveStatus(request),
   groupName: group?.name,
   createdAt: request.createdAt,
   expiresAt: request.expiresAt,
+  /** So the waiting room can count down rather than spin indefinitely. */
+  expiresInMs: Math.max(0, new Date(request.expiresAt).getTime() - Date.now()),
 });
 
 /**
- * Ask to join, by short code.
+ * Ask to join — by short code, or by invite link into a private group.
  *
- * Returns the request, never the invite code — that is the whole point. A wrong
- * code and a deleted group are still reported identically, so this adds no way to
- * discover that some other group exists.
+ * One function for both ways in, because "who is allowed to wait in the room" is
+ * one rule and splitting it across two call sites is how the two drift apart.
+ * The caller passes whichever handle it has.
  */
-const request = async ({ code, name, deviceId, userAgent = "" }) => {
+const request = async ({ code, inviteCode, group: preloaded, name, deviceId, userAgent = "" }) => {
   if (!deviceId) throw new ValidationError("A device id is required to ask to join");
 
   const trimmed = String(name || "").trim();
@@ -63,12 +80,20 @@ const request = async ({ code, name, deviceId, userAgent = "" }) => {
     throw new ValidationError(`Keep the name under ${LIMITS.MEMBER_NAME_MAX} characters`);
   }
 
-  const normalized = normalizeJoinCode(code);
-  if (!isValidJoinCode(normalized)) {
-    throw new NotFoundError("No group found with that code", ERROR_CODES.GROUP_NOT_FOUND);
+  let group = preloaded;
+
+  if (!group && inviteCode) {
+    group = await groupRepository.findByInviteCode(inviteCode);
   }
 
-  const group = await groupRepository.findByJoinCode(normalized);
+  if (!group && code) {
+    const normalized = normalizeJoinCode(code);
+    if (!isValidJoinCode(normalized)) {
+      throw new NotFoundError("No group found with that code", ERROR_CODES.GROUP_NOT_FOUND);
+    }
+    group = await groupRepository.findByJoinCode(normalized);
+  }
+
   if (!group || group.status !== GROUP_STATUS.ACTIVE) {
     throw new NotFoundError("No group found with that code", ERROR_CODES.GROUP_NOT_FOUND);
   }
@@ -81,6 +106,17 @@ const request = async ({ code, name, deviceId, userAgent = "" }) => {
   const existingMember = await memberRepository.findByDevice(group._id, deviceId);
   if (existingMember) {
     return { status: JOIN_REQUEST_STATUS.APPROVED, inviteCode: group.inviteCode, alreadyMember: true };
+  }
+
+  /**
+   * A public group has no waiting room. Reached when a client asks anyway —
+   * a stale tab, or a group switched back to public between the lookup and the
+   * ask — and answered with the invite code rather than an error, because the
+   * caller is entitled to it and a request nobody will ever see is worse than no
+   * request.
+   */
+  if (!group.isPrivate) {
+    return { status: JOIN_REQUEST_STATUS.APPROVED, inviteCode: group.inviteCode, open: true };
   }
 
   const activeCount = await memberRepository.countActive(group._id);
@@ -114,7 +150,7 @@ const request = async ({ code, name, deviceId, userAgent = "" }) => {
       deviceId,
       name: trimmed,
       status: JOIN_REQUEST_STATUS.PENDING,
-      expiresAt: new Date(Date.now() + REQUEST_TTL_MS),
+      expiresAt: new Date(Date.now() + ttlMs()),
       userAgent: String(userAgent).slice(0, 300),
     });
   } catch (err) {
@@ -153,15 +189,16 @@ const statusFor = async ({ requestId, deviceId }) => {
   }
 
   const group = await groupRepository.findById(found.groupId);
+  const dto = toDTO(found, group);
 
   return {
-    ...toDTO(found, group),
+    ...dto,
     /**
      * The invite code appears here and nowhere else, and only once a member has
      * said yes. Everything upstream of this line treats a correct short code as a
      * knock rather than a key.
      */
-    inviteCode: found.status === JOIN_REQUEST_STATUS.APPROVED ? group?.inviteCode : undefined,
+    inviteCode: dto.status === JOIN_REQUEST_STATUS.APPROVED ? group?.inviteCode : undefined,
   };
 };
 
@@ -312,5 +349,6 @@ module.exports = {
   decide,
   cancel,
   expireStale,
-  REQUEST_TTL_MS,
+  effectiveStatus,
+  ttlMs,
 };

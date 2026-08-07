@@ -43,11 +43,41 @@ const check = (label, actual, want) =>
   );
   const owner = await Member.findOne({ groupId: group._id });
 
-  console.log("--- THE POINT: a correct code alone gives nothing away ---");
+  console.log("--- a PUBLIC group keeps the old, instant flow ---");
+  check("groups are public by default", Boolean(group.isPrivate), false);
+  const publicLookup = await groupService.lookupByJoinCode(joinCode, strangerDevice);
+  check("the code resolves straight to the link", publicLookup.inviteCode, group.inviteCode);
+  check("no approval asked for", publicLookup.requiresApproval, undefined);
+
+  const publicAsk = await joinRequestService.request({
+    code: joinCode,
+    name: "Walk-in",
+    deviceId: `walkin-${stamp}`,
+  });
+  check("asking a public group just lets you in", publicAsk.open, true);
+  check("no waiting row created", await JoinRequest.countDocuments({ groupId: group._id }), 0);
+
+  console.log("\n--- the creator makes it private ---");
+  await groupService.updateGroup({ group, actor: owner, isPrivate: true });
+  Object.assign(group, await Group.findById(group._id));
+  check("the switch is on", group.isPrivate, true);
+
+  console.log("\n--- THE POINT: now a correct code gives nothing away ---");
   const lookup = await groupService.lookupByJoinCode(joinCode, strangerDevice);
   check("the group name is confirmed", lookup.groupName, "Trip");
   check("the invite code is NOT returned", lookup.inviteCode, undefined);
   check("the client is told approval is needed", lookup.requiresApproval, true);
+
+  console.log("\n--- and the invite LINK is gated too ---");
+  const linkAsk = await joinRequestService.request({
+    group,
+    name: "Link holder",
+    deviceId: `linker-${stamp}`,
+  });
+  check("holding the link still means waiting", linkAsk.status, JOIN_REQUEST_STATUS.PENDING);
+  check("no invite code handed back", linkAsk.inviteCode, undefined);
+  check("no member created", await Member.countDocuments({ groupId: group._id }), 1);
+  await JoinRequest.deleteOne({ _id: linkAsk.id });
 
   console.log("\n--- a member's own browser skips the queue ---");
   const ownerLookup = await groupService.lookupByJoinCode(joinCode, ownerDevice);
@@ -163,6 +193,36 @@ const check = (label, actual, want) =>
     refused = true;
   }
   check("actor must be a member", refused, true);
+
+  console.log("\n--- the waiting room is short, and honest about it ---");
+  const ttlMinutes = require("../src/config/env").join.requestTtlMinutes;
+  const timed = await joinRequestService.request({
+    code: joinCode,
+    name: "Timed",
+    deviceId: `timed-${stamp}`,
+  });
+  const windowMinutes = Math.round(timed.expiresInMs / 60000);
+  console.log(`  window is ${windowMinutes} minute(s), configured ${ttlMinutes}`);
+  check("expiry matches the configured window", windowMinutes, ttlMinutes);
+
+  console.log("\n--- a lapsed request reads as expired before the sweep runs ---");
+  await JoinRequest.updateOne(
+    { _id: timed.id },
+    { $set: { expiresAt: new Date(Date.now() - 1000) } }
+  );
+  const readStale = await joinRequestService.statusFor({
+    requestId: timed.id,
+    deviceId: `timed-${stamp}`,
+  });
+  check("status is expired on read", readStale.status, JOIN_REQUEST_STATUS.EXPIRED);
+  check("still no invite code", readStale.inviteCode, undefined);
+  const rowStill = await JoinRequest.findById(timed.id);
+  check("even though the row still says pending", rowStill.status, JOIN_REQUEST_STATUS.PENDING);
+  check(
+    "and it is hidden from the members' list",
+    (await joinRequestService.listPending(group)).some((r) => r.id === String(timed.id)),
+    false
+  );
 
   console.log("\n--- expiry closes the door on stale requests ---");
   const third = await joinRequestService.request({

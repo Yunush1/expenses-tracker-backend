@@ -21,6 +21,12 @@ const toGroupDTO = (group) => ({
   joinCode: group.joinCode || null,
   currency: group.currency,
   status: group.status,
+  /**
+   * Whether new people have to be let in. Visible to every member, not only the
+   * creator — "can I just send them the link?" is a question anyone in the group
+   * needs answered before they send it.
+   */
+  isPrivate: Boolean(group.isPrivate),
   memberCount: group.memberCount,
   createdAt: group.createdAt,
   lastActivityAt: group.lastActivityAt,

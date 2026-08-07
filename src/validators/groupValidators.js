@@ -24,11 +24,16 @@ const updateGroupSchema = z
     name: trimmedString(LIMITS.GROUP_NAME_MAX, "Group name").optional(),
     description: z.string().trim().max(LIMITS.GROUP_DESC_MAX).optional(),
     joinCode,
+    /** Approval for new members. See models/group.js for what it gates. */
+    isPrivate: z.boolean().optional(),
   })
   .refine(
     (data) =>
-      data.name !== undefined || data.description !== undefined || data.joinCode !== undefined,
-    { message: "Provide a name, description or join code to update" }
+      data.name !== undefined ||
+      data.description !== undefined ||
+      data.joinCode !== undefined ||
+      data.isPrivate !== undefined,
+    { message: "Provide a name, description, join code or privacy setting to update" }
   );
 
 const lookupQuerySchema = z.object({

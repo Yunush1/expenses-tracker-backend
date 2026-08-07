@@ -239,6 +239,22 @@ const config = Object.freeze({
    */
   referral: referralConfig,
 
+  join: Object.freeze({
+    /**
+     * How long someone waits in the room before the request lapses
+     * (docs/13-JOIN-APPROVAL.md §6).
+     *
+     * Short on purpose. A join request is a live moment — people are usually in
+     * the same room, one of them reading a code off a screen — so the useful
+     * window is minutes, not hours. Short also means a tap on a stale
+     * notification cannot admit somebody who asked, gave up, and walked away.
+     *
+     * The cost is real: a group whose members are all asleep will expire a
+     * genuine request. Asking again is one tap, which is the better failure.
+     */
+    requestTtlMinutes: Math.max(1, Number(process.env.JOIN_REQUEST_TTL_MINUTES ?? 15)),
+  }),
+
   ledger: Object.freeze({
     /**
      * Copy a signed-in person's share of a group expense into their personal
