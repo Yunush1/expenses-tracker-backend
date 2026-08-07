@@ -38,6 +38,8 @@ const dryRun = process.argv.includes("--dry");
 const allowShared = process.argv.includes("--allow-shared");
 /** Repair a run made before the rule above existed. */
 const repair = process.argv.includes("--repair-ambiguous");
+/** Fill in categories on mirrors written before inference existed. */
+const recategorise = process.argv.includes("--recategorise");
 const email = arg("email");
 const sinceRaw = arg("since");
 const since = sinceRaw ? new Date(sinceRaw) : null;
@@ -64,6 +66,18 @@ const since = sinceRaw ? new Date(sinceRaw) : null;
       "WARNING: LEDGER_MIRROR_GROUP_EXPENSES is false, so new expenses are not\n" +
       "         being mirrored and these rows will not be kept in step with edits.\n"
     );
+  }
+
+  if (recategorise) {
+    const result = await ledgerMirrorService.recategoriseMirrors({ dryRun });
+    console.log(
+      `  ${result.updated} of ${result.examined} uncategorised mirror(s) ${
+        dryRun ? "would be labelled" : "labelled"
+      } from their description.\n` +
+      `  ${result.examined - result.updated} had nothing recognisable and stay blank.\n`
+    );
+    await mongoose.disconnect();
+    return;
   }
 
   if (repair) {

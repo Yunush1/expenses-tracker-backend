@@ -63,6 +63,11 @@ const listEntriesQuery = paginationQuery.extend({
     .enum(["true", "false"])
     .optional()
     .transform((value) => (value === undefined ? undefined : value === "true")),
+  /**
+   * Which half of the ledger. Absent means both — the tabs pass one, and anything
+   * else reading this endpoint keeps the whole picture it had before.
+   */
+  source: z.enum(["MANUAL", "GROUP_EXPENSE"]).optional(),
 });
 
 const entryParams = z.object({ id: objectId });

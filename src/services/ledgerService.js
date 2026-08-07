@@ -113,7 +113,10 @@ const getSummary = async (userId) => {
   };
 };
 
-const listEntries = async (userId, { cursor, limit = LIMITS.DEFAULT_PAGE_SIZE, type, settled } = {}) => {
+const listEntries = async (
+  userId,
+  { cursor, limit = LIMITS.DEFAULT_PAGE_SIZE, type, settled, source } = {}
+) => {
   const ledger = await getOrCreate(userId);
 
   const rows = await ledgerRepository.listEntries(ledger._id, {
@@ -121,6 +124,7 @@ const listEntries = async (userId, { cursor, limit = LIMITS.DEFAULT_PAGE_SIZE, t
     limit,
     type,
     settled,
+    source,
   });
 
   const page = buildPage(rows, limit);

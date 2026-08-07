@@ -89,6 +89,19 @@ const check = (label, actual, want) =>
   check("it is labelled with the group", mirror.sourceGroupName, "Goa trip");
   check("it is marked as mirrored", mirror.source, "GROUP_EXPENSE");
 
+  console.log("\n--- the category is inferred, since group expenses have none ---");
+  check("'Dinner' → FOOD", mirror.category, "FOOD");
+  check("the group expense itself still has none", expense.category ?? null, null);
+
+  const { inferCategory } = require("../src/utils/inferCategory");
+  check("'Auto to station' → TRAVEL", inferCategory("Auto to station"), "TRAVEL");
+  check("'Zepto groceries' → FOOD", inferCategory("Zepto groceries"), "FOOD");
+  check("'Electricity bill' → BILLS", inferCategory("Electricity bill"), "BILLS");
+  check("'Movie tickets' → ENTERTAINMENT", inferCategory("Movie tickets"), "ENTERTAINMENT");
+  check("'Flight to Goa' → TRAVEL, not a taxi", inferCategory("Flight to Goa"), "TRAVEL");
+  check("an unrecognised word stays blank, not OTHER", inferCategory("xyzzy"), "");
+  check("an explicit category always wins", inferCategory("Dinner", "RENT"), "RENT");
+
   console.log("\n--- and it does not pay points twice ---");
   check(
     "one ACTIVE_DAY for the whole action",
@@ -103,6 +116,24 @@ const check = (label, actual, want) =>
   check("the mirror logged nothing of its own", activities.length - activityBefore, 1);
   // The reminder sweep looks for dueAt; a mirrored spend must never enter it.
   check("mirror carries no due date, so no reminder", mirror.dueAt, null);
+
+  console.log("\n--- the two halves are separable, and add up ---");
+  const ledgerService2 = require("../src/services/ledgerService");
+  const summaryNow = await ledgerService2.getSummary(user._id);
+  const t = summaryNow.totals;
+  check(
+    "own + group equals the total spent",
+    t.spentOwnMinor + t.spentGroupMinor,
+    t.spentMinor
+  );
+  check("this expense counts as group spending", t.spentGroupCount, 1);
+  check("nothing was typed by hand", t.spentOwnCount, 0);
+
+  const groupOnly = await ledgerService2.listEntries(user._id, { source: "GROUP_EXPENSE" });
+  const manualOnly = await ledgerService2.listEntries(user._id, { source: "MANUAL" });
+  check("the group tab has the mirror", groupOnly.items.length, 1);
+  check("the personal tab does not", manualOnly.items.length, 0);
+  check("and it is labelled with its group", groupOnly.items[0].fromGroup, "Goa trip");
 
   console.log("\n--- editing the split re-derives the share ---");
   await expenseService.updateExpense({

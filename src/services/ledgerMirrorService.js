@@ -6,6 +6,7 @@ const Expense = require("../models/expense");
 const ledgerService = require("./ledgerService");
 const pointsService = require("./pointsService");
 const config = require("../config/env");
+const { inferCategory } = require("../utils/inferCategory");
 const { LEDGER_ENTRY_TYPES } = require("../constants");
 const logger = require("../utils/logger");
 
@@ -150,6 +151,13 @@ const writeMirror = async ({ ledgerId, group, expense, memberId }) => {
       amountMinor,
       currencyCode: expense.currencyCode || group.currency,
       description: expense.description,
+      /**
+       * Inferred from the description, because nothing populates `category` on a
+       * group expense. Without it every mirrored row would land uncategorised and
+       * "what did I spend on food this month" would answer only for the entries
+       * someone typed by hand — which is a wrong number, not a partial one.
+       */
+      category: inferCategory(expense.description, expense.category),
       occurredAt: expense.expenseDate || new Date(),
       source: "GROUP_EXPENSE",
       sourceExpenseId: expense._id,
@@ -206,6 +214,9 @@ const syncMirror = async (expense) => {
 
       mirror.amountMinor = amountMinor;
       mirror.description = expense.description;
+      // Re-inferred, because the description is what it was inferred from — an
+      // edit from "Auto" to "Dinner" should not leave the row filed under travel.
+      mirror.category = inferCategory(expense.description, expense.category);
       mirror.occurredAt = expense.expenseDate || mirror.occurredAt;
       mirror.version += 1;
       await mirror.save();
@@ -417,10 +428,40 @@ const removeAmbiguousMirrors = async ({ dryRun = false } = {}) => {
   return { expenses: expenseIds.length, rows };
 };
 
+/**
+ * Fill in categories on mirrors written before inference existed.
+ *
+ * Only touches rows with no category, so it cannot overwrite a label someone set
+ * by hand — and re-running it is a no-op once every row has one.
+ */
+const recategoriseMirrors = async ({ dryRun = false } = {}) => {
+  const rows = await LedgerEntry.find({
+    source: "GROUP_EXPENSE",
+    isDeleted: false,
+    $or: [{ category: "" }, { category: null }, { category: { $exists: false } }],
+  })
+    .select("_id description")
+    .lean();
+
+  let updated = 0;
+
+  for (const row of rows) {
+    const category = inferCategory(row.description);
+    if (!category) continue; // Nothing recognisable; leave it blank rather than guess OTHER.
+
+    updated += 1;
+    // eslint-disable-next-line no-await-in-loop -- a one-off repair, small by nature
+    if (!dryRun) await LedgerEntry.updateOne({ _id: row._id }, { $set: { category } });
+  }
+
+  return { examined: rows.length, updated };
+};
+
 module.exports = {
   mirrorExpense,
   syncMirror,
   removeMirror,
+  recategoriseMirrors,
   backfillForUser,
   backfillAll,
   removeAmbiguousMirrors,

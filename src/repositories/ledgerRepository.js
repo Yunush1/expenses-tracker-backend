@@ -18,10 +18,20 @@ const touchActivity = (ledgerId) =>
  * without it the cursor could loop or skip on a boundary, which is the failure
  * the opaque cursor exists to prevent (utils/cursor.js).
  */
-const listEntries = (ledgerId, { cursor, limit, type, settled } = {}) => {
+const listEntries = (ledgerId, { cursor, limit, type, settled, source } = {}) => {
   const filter = { ledgerId, isDeleted: false };
 
   if (type) filter.type = type;
+
+  /**
+   * Where the row came from — typed here, or mirrored from a group expense.
+   *
+   * `MANUAL` matches missing as well as `"MANUAL"`: every entry written before
+   * the field existed is a manual one, and they must not vanish from the tab that
+   * is supposed to show them.
+   */
+  if (source === "MANUAL") filter.source = { $in: [null, "MANUAL"] };
+  else if (source === "GROUP_EXPENSE") filter.source = "GROUP_EXPENSE";
 
   /**
    * Settlement is a debt concept, so filtering by it scopes to debts.
@@ -102,19 +112,43 @@ const totals = async (ledgerId, { spendSince } = {}) => {
           ...(spendSince ? { occurredAt: { $gte: spendSince } } : {}),
         },
       },
-      { $group: { _id: null, totalMinor: { $sum: "$amountMinor" }, count: { $sum: 1 } } },
+      /**
+       * Grouped by origin so the two tabs can each show their own figure.
+       *
+       * The split is presentational — "what I spent alone" and "my share of what
+       * we spent together" are different questions people ask separately — but
+       * `spentMinor` stays the sum of both, because "what did I spend this month"
+       * has one answer and it is not half of one.
+       */
+      {
+        $group: {
+          _id: { $ifNull: ["$source", "MANUAL"] },
+          totalMinor: { $sum: "$amountMinor" },
+          count: { $sum: 1 },
+        },
+      },
     ]),
   ]);
 
   const byType = new Map(debts.map((row) => [row._id, row]));
+  const bySource = new Map(spend.map((row) => [row._id, row]));
+  const manual = bySource.get("MANUAL") || { totalMinor: 0, count: 0 };
+  const fromGroups = bySource.get("GROUP_EXPENSE") || { totalMinor: 0, count: 0 };
 
   return {
     owedToMeMinor: byType.get(LEDGER_ENTRY_TYPES.LENT)?.outstandingMinor || 0,
     owedToMeCount: byType.get(LEDGER_ENTRY_TYPES.LENT)?.count || 0,
     iOweMinor: byType.get(LEDGER_ENTRY_TYPES.BORROWED)?.outstandingMinor || 0,
     iOweCount: byType.get(LEDGER_ENTRY_TYPES.BORROWED)?.count || 0,
-    spentMinor: spend[0]?.totalMinor || 0,
-    spentCount: spend[0]?.count || 0,
+    /** Both halves together — the answer to "what did I spend this month". */
+    spentMinor: manual.totalMinor + fromGroups.totalMinor,
+    spentCount: manual.count + fromGroups.count,
+    /** Spent alone. */
+    spentOwnMinor: manual.totalMinor,
+    spentOwnCount: manual.count,
+    /** My share of what the groups spent. */
+    spentGroupMinor: fromGroups.totalMinor,
+    spentGroupCount: fromGroups.count,
   };
 };
 
