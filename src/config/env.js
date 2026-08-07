@@ -33,6 +33,62 @@ const parseOrigins = (raw) =>
     .map((origin) => origin.trim())
     .filter(Boolean);
 
+/**
+ * How many reverse proxies sit in front of this server.
+ *
+ * ## Why this cannot just be `true`
+ *
+ * `trust proxy: true` tells Express to believe the whole `X-Forwarded-For` chain,
+ * including the part a client wrote. A caller can then send
+ * `X-Forwarded-For: 1.2.3.4` and become 1.2.3.4 as far as `req.ip` is concerned —
+ * a fresh identity per request, which makes every rate limiter in the app
+ * decorative. That matters most for `codeLookupLimiter`, which is the only thing
+ * standing between an 8-character join code and enumeration
+ * (docs/13-JOIN-APPROVAL.md §1).
+ *
+ * A **hop count** is the safe form: Express takes the address that many positions
+ * from the right of the chain, which is the one *your* proxy wrote and a client
+ * cannot forge. One nginx in front means `TRUST_PROXY=1`.
+ *
+ * ## And why it cannot just be `false`
+ *
+ * Left off behind a proxy, every request appears to come from the proxy's own
+ * address. All users then share one rate-limit bucket, so one busy person locks
+ * out everybody — and express-rate-limit throws
+ * `ERR_ERL_UNEXPECTED_X_FORWARDED_FOR` rather than pretend that is fine.
+ *
+ * Accepts: a number of hops, `false`/`0` for no proxy, or one of Express's named
+ * ranges (`loopback`, `linklocal`, `uniquelocal`), or a comma-separated list of
+ * trusted proxy addresses.
+ */
+const parseTrustProxy = (raw) => {
+  const value = String(raw ?? "").trim();
+
+  if (!value || value === "false" || value === "0") return false;
+
+  /**
+   * `true` is coerced to a single hop rather than honoured.
+   *
+   * It is the commonest thing to write and the one setting that silently removes
+   * the protection, so it is treated as "there is a proxy" — the thing the author
+   * meant — and logged.
+   */
+  if (value === "true") {
+    logger.warn(
+      "[config] TRUST_PROXY=true lets clients spoof their IP and defeat rate limiting — " +
+      "using 1 hop instead. Set the actual number of proxies in front of this server."
+    );
+    return 1;
+  }
+
+  if (/^\d+$/.test(value)) return Number(value);
+
+  if (["loopback", "linklocal", "uniquelocal"].includes(value)) return value;
+
+  // A list of addresses or CIDRs, which Express accepts directly.
+  return value.split(",").map((entry) => entry.trim()).filter(Boolean);
+};
+
 /** The hard ceiling on referral depth, whatever the environment asks for. */
 const MAX_REFERRAL_DEPTH = 5;
 
@@ -121,6 +177,8 @@ const config = Object.freeze({
    */
   redisUrl: (process.env.REDIS_URL || "").trim(),
   clientUrls: parseOrigins(process.env.CLIENT_URLS),
+  /** Reverse proxies in front of this server — see parseTrustProxy above. */
+  trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
   appBaseUrl: (process.env.APP_BASE_URL || "http://localhost:5173").replace(/\/+$/, ""),
 
   /**
