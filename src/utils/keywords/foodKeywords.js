@@ -1,0 +1,118 @@
+
+const FOOD_KEYWORDS = [
+    // Vegetables
+    "potato",
+    "potatoes",
+    "patato",
+    "aloo",
+    "allu",
+    "onion",
+    "tomato",
+    "tamatar",
+    "bhindi",
+    "okra",
+    "palak",
+    "spinach",
+    "cabbage",
+    "cauliflower",
+    "carrot",
+    "peas",
+    "capsicum",
+    "cucumber",
+    "ginger",
+    "garlic",
+
+    // Dairy
+    "milk",
+    "curd",
+    "dahi",
+    "yogurt",
+    "paneer",
+    "cheese",
+    "butter",
+    "ghee",
+
+    // Grains
+    "atta",
+    "flour",
+    "rice",
+    "dal",
+    "lentils",
+
+    // Breads
+    "roti",
+    "chapati",
+    "paratha",
+    "parantha",
+    "naan",
+    "kulcha",
+
+    // Popular Indian Foods
+    "aloo paratha",
+    "allu paratha",
+    "sattu paratha",
+    "satu paratha",
+    "paneer paratha",
+    "gobi paratha",
+    "mooli paratha",
+    "rajma chawal",
+    "chole bhature",
+    "chole kulche",
+    "kadhi chawal",
+    "poha",
+    "upma",
+    "idli",
+    "dosa",
+    "uttapam",
+    "vada",
+    "vada pav",
+    "misal pav",
+    "pav bhaji",
+    "golgappa",
+    "gol gappa",
+    "golgappe",
+    "pani puri",
+    "chaat",
+    "bhel",
+    "sev puri",
+    "dahi puri",
+    "kachori",
+    "samosa",
+    "kachori sabzi",
+
+    // Fast Food
+    "pizza",
+    "burger",
+    "sandwich",
+    "fries",
+    "momos",
+    "noodles",
+    "pasta",
+    "roll",
+    "egg roll",
+    "chicken roll",
+
+    // Drinks
+    "coffee",
+    "tea",
+    "chai",
+    "juice",
+    "shake",
+    "lassi",
+
+    // Meat
+    "egg",
+    "eggs",
+    "chicken",
+    "mutton",
+    "fish",
+
+    // Apps
+    "swiggy",
+    "zomato",
+    "zepto",
+    "blinkit",
+    "bigbasket",
+    "instamart"
+];
+module.exports = { FOOD_KEYWORDS };
