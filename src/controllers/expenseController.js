@@ -9,6 +9,10 @@ exports.listExpenses = asyncHandler(async (req, res) => {
   return ok(res, data);
 });
 
+exports.listPeriods = asyncHandler(async (req, res) =>
+  ok(res, await expenseService.listPeriods(req.group))
+);
+
 exports.getExpense = asyncHandler(async (req, res) => {
   const expense = await expenseService.getExpense(req.group, req.params.expenseId);
   return ok(res, { expense });

@@ -464,6 +464,67 @@ const deleteExpense = async ({ group, actor, expenseId }) => {
   return true;
 };
 
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/**
+ * The months and years this group has spending in.
+ *
+ * ## Why this is a view and not a new kind of thing
+ *
+ * A flatshare runs for years in one group, and the ask is to stop creating a new
+ * group every month. Expenses already carry a date, so "August" is a *filter*,
+ * not an entity — no cycle to open, close, roll over or accidentally leave two of
+ * open at once. Nothing about the money model changes.
+ *
+ * **What deliberately does not become period-scoped: balances and settle-up.**
+ * A settlement in September routinely pays off August's dinner, so "who owes whom
+ * in August" computed from August's rows alone would ignore the payment that
+ * cleared it — and show a debt somebody has already settled. Someone would pay
+ * twice. Spending totals split by month cleanly; debts do not, because a debt is
+ * a running position, not a monthly one. See docs/14-PERIODS.md §3.
+ */
+const listPeriods = async (group) => {
+  const rows = await expenseRepository.periods(group._id);
+
+  const months = rows.map((row) => ({
+    key: `${row._id.year}-${String(row._id.month).padStart(2, "0")}`,
+    year: row._id.year,
+    month: row._id.month,
+    label: `${MONTHS[row._id.month - 1]} ${row._id.year}`,
+    shortLabel: `${MONTHS[row._id.month - 1].slice(0, 3)}`,
+    totalMinor: row.totalMinor,
+    count: row.count,
+  }));
+
+  // Rolled up here rather than in a second aggregation — the months already carry
+  // everything a year needs.
+  const byYear = new Map();
+  for (const month of months) {
+    const current = byYear.get(month.year) || { totalMinor: 0, count: 0 };
+    byYear.set(month.year, {
+      totalMinor: current.totalMinor + month.totalMinor,
+      count: current.count + month.count,
+    });
+  }
+
+  const years = [...byYear.entries()]
+    .map(([year, totals]) => ({ key: String(year), year, label: String(year), ...totals }))
+    .sort((a, b) => b.year - a.year);
+
+  return {
+    months,
+    years,
+    /** So the header can say "all time" without a second request. */
+    total: {
+      totalMinor: months.reduce((sum, month) => sum + month.totalMinor, 0),
+      count: months.reduce((sum, month) => sum + month.count, 0),
+    },
+  };
+};
+
 const listExpenses = async (group, options = {}) => {
   const { limit = LIMITS.DEFAULT_PAGE_SIZE, dateField = "expenseDate", sort = "date_desc" } = options;
 
@@ -501,6 +562,7 @@ module.exports = {
   updateExpense,
   deleteExpense,
   listExpenses,
+  listPeriods,
   getExpense,
   // Exported for tests: it is the rule that decides whose numbers can be changed.
   assertCanModify,

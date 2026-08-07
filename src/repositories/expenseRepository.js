@@ -216,6 +216,40 @@ const aggregateTotals = (groupId) =>
     },
   ]);
 
+/**
+ * Which months and years this group actually has expenses in.
+ *
+ * ## Why the server decides which periods exist
+ *
+ * A flatshare runs for years in one group, and the alternative — a month picker
+ * offering every month since the group was made — sends people tapping through
+ * empty screens to find the three months that have anything in them. Offering
+ * only the real ones turns navigation into a short list.
+ *
+ * The totals ride along free: the group stage is already scanning these rows, and
+ * the period header needs "₹12,400 across 23 expenses" without fetching 23
+ * expenses to add them up.
+ *
+ * Grouped in UTC, like every other day boundary in this app. An expense logged
+ * near midnight on the 1st can land in the neighbouring month for someone far
+ * from UTC — at the edge of a month, on a figure nobody settles on.
+ */
+const periods = (groupId) =>
+  Expense.aggregate([
+    { $match: { groupId: new mongoose.Types.ObjectId(String(groupId)), isDeleted: false } },
+    {
+      $group: {
+        _id: {
+          year: { $year: { date: "$expenseDate", timezone: "UTC" } },
+          month: { $month: { date: "$expenseDate", timezone: "UTC" } },
+        },
+        totalMinor: { $sum: "$amountMinor" },
+        count: { $sum: 1 },
+      },
+    },
+    { $sort: { "_id.year": -1, "_id.month": -1 } },
+  ]);
+
 const deleteByGroup = (groupId, session = null) => Expense.deleteMany({ groupId }, { session });
 
 module.exports = {
@@ -230,5 +264,6 @@ module.exports = {
   countByGroup,
   countInvolvingMember,
   aggregateTotals,
+  periods,
   deleteByGroup,
 };

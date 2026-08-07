@@ -3,6 +3,9 @@ const express = require("express");
 const groupController = require("../controllers/groupController");
 const joinRequestController = require("../controllers/joinRequestController");
 const balanceController = require("../controllers/balanceController");
+// Mounted on the group router rather than the expense one: periods describe the
+// group's timeline, and the expense router is scoped under /expenses.
+const expenseController = require("../controllers/expenseController");
 const activityController = require("../controllers/activityController");
 const memberRoutes = require("./memberRoutes");
 const expenseRoutes = require("./expenseRoutes");
@@ -93,6 +96,12 @@ router.delete("/:inviteCode", writeLimiter, requireCreator, groupController.dele
 /* ------------------------- Derived read models --------------------------- */
 
 router.get("/:inviteCode/balances", balanceController.getBalances);
+
+/**
+ * Which months and years this group has spending in — so one group can run for
+ * years instead of one per month (docs/14-PERIODS.md).
+ */
+router.get("/:inviteCode/periods", expenseController.listPeriods);
 
 router.get(
   "/:inviteCode/activities",

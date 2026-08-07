@@ -144,6 +144,42 @@ const day = (n) => new Date(Date.now() - n * 24 * 3600 * 1000);
     check(`${sort}: every row, exactly once`, `${seen.length}/${unique.size}`, `${rows.length}/${rows.length}`);
   }
 
+  console.log("\n--- periods: one group, many months ---");
+  // Backdate two rows into earlier months so the timeline has something to walk.
+  const all = await Expense.find({ groupId: group._id }).select("_id").lean();
+  const lastMonth = new Date();
+  lastMonth.setUTCMonth(lastMonth.getUTCMonth() - 1, 15);
+  const lastYear = new Date();
+  lastYear.setUTCFullYear(lastYear.getUTCFullYear() - 1, 5, 10);
+  await Expense.updateOne({ _id: all[0]._id }, { $set: { expenseDate: lastMonth } });
+  await Expense.updateOne({ _id: all[1]._id }, { $set: { expenseDate: lastYear } });
+
+  const periods = await expenseService.listPeriods(group);
+  console.log(`  months: ${periods.months.map((m) => m.key).join(", ")}`);
+  console.log(`  years:  ${periods.years.map((y) => y.key).join(", ")}`);
+  check("three distinct months", periods.months.length, 3);
+  check("two distinct years", periods.years.length, 2);
+  check("newest month first", periods.months[0].year >= periods.months[1].year, true);
+
+  const monthSum = periods.months.reduce((s, m) => s + m.totalMinor, 0);
+  const yearSum = periods.years.reduce((s, y) => s + y.totalMinor, 0);
+  check("years roll up the months exactly", yearSum, monthSum);
+  check("and the all-time total agrees", periods.total.totalMinor, monthSum);
+  check("counts add up too", periods.total.count, rows.length);
+
+  console.log("\n--- a month's chip total matches that month's rows ---");
+  const target = periods.months[1];
+  const [y, m] = target.key.split("-");
+  const lastDay = new Date(Date.UTC(Number(y), Number(m), 0)).getUTCDate();
+  const monthList = await expenseService.listExpenses(group, {
+    from: `${y}-${m}-01`,
+    to: `${y}-${m}-${lastDay}`,
+    limit: 50,
+  });
+  const listed = monthList.items.reduce((s, e) => s + e.amountMinor, 0);
+  check(`${target.label}: total matches the list`, listed, target.totalMinor);
+  check("and so does the count", monthList.items.length, target.count);
+
   console.log("\n--- filters combine ---");
   const combined = await expenseService.listExpenses(group, {
     q: "dinner",
@@ -154,9 +190,16 @@ const day = (n) => new Date(Date.now() - n * 24 * 3600 * 1000);
   check("and the sort still applies", combined.items[0].description, "Dinner at the dhaba");
 
   console.log("\n--- an unfiltered list is unchanged ---");
-  const plain = await expenseService.listExpenses(group, {});
-  check("everything, newest first", plain.items.length, rows.length);
-  check("default sort is by expense date", plain.items[0].description, "Dinner at the dhaba");
+  const plain = await expenseService.listExpenses(group, { limit: 50 });
+  check("everything is returned", plain.items.length, rows.length);
+  // Asserted as an ordering rather than by name: the periods section above
+  // backdates two rows, so which one is newest is no longer a fixed answer.
+  const dates = plain.items.map((e) => new Date(e.expenseDate).getTime());
+  check(
+    "default sort is expense date, newest first",
+    dates.every((d, i) => i === 0 || dates[i - 1] >= d),
+    true
+  );
 
   console.log("\n--- cleanup ---");
   await Expense.deleteMany({ groupId: group._id });
