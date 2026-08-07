@@ -232,6 +232,61 @@ const updateEntry = async (userId, entryId, dto) => {
     );
   }
 
+  /**
+   * Changing what the entry is.
+   *
+   * Three cases, and they are not symmetrical:
+   *
+   * **debt → debt** (LENT ↔ BORROWED). Free. The repayments still mean money
+   * moving; only the direction changes, and "I thought they owed me, actually I
+   * owed them" is a normal correction.
+   *
+   * **debt → SPEND**, with repayments recorded. **Refused.** A `SPEND` has no
+   * outstanding balance, so those rows would stop meaning anything — and silently
+   * discarding a record of money that changed hands is precisely what this ledger
+   * exists not to do. Removing the repayments first is one extra step and makes
+   * the loss the user's decision rather than a side effect.
+   *
+   * **SPEND → debt**. Needs somebody to owe. A debt with no counterparty is not a
+   * debt, and every reminder and settle-up flow downstream assumes a name.
+   */
+  if (dto.type !== undefined && dto.type !== entry.type) {
+    const wasDebt = DEBT_TYPES.has(entry.type);
+    const willBeDebt = DEBT_TYPES.has(dto.type);
+
+    if (wasDebt && !willBeDebt && (entry.repayments || []).length > 0) {
+      throw new BadRequestError(
+        "This has repayments recorded against it. Remove them first, then change it to a spend.",
+        ERROR_CODES.REPAYMENT_EXCEEDS_PRINCIPAL
+      );
+    }
+
+    const counterparty = (dto.counterpartyName ?? entry.counterpartyName ?? "").trim();
+    if (!wasDebt && willBeDebt && !counterparty) {
+      throw new BadRequestError(
+        "Who is this with? A loan needs the other person's name.",
+        ERROR_CODES.VALIDATION_ERROR
+      );
+    }
+
+    entry.type = dto.type;
+
+    if (!willBeDebt) {
+      /**
+       * Becoming a spend. Everything that only makes sense for a debt is cleared
+       * rather than left behind — a stale `dueAt` would keep the reminder sweep
+       * chasing money nobody owes (docs/08-PERSONAL-LEDGER.md §6).
+       */
+      entry.counterpartyName = "";
+      entry.dueAt = null;
+      entry.settledAt = null;
+      entry.reminderCount = 0;
+      entry.lastRemindedOn = "";
+    } else {
+      entry.counterpartyName = counterparty;
+    }
+  }
+
   if (dto.amount !== undefined) {
     const amountMinor = toMinor(dto.amount, ledger.currency);
     /**

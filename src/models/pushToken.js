@@ -67,7 +67,7 @@ const pushTokenSchema = new mongoose.Schema(
      */
     timeZone: {
       type: String,
-      default: "",
+      default: "Asia/Kolkata",
       maxlength: 64,
     },
     /**

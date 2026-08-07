@@ -1,6 +1,6 @@
 const { z } = require("zod");
 const { objectId, amount, trimmedString, clientRequestId, paginationQuery } = require("./common");
-const { LIMITS, SPLIT_TYPES } = require("../constants");
+const { LIMITS, SPLIT_TYPES, LEDGER_CATEGORIES } = require("../constants");
 
 /** Guards against a mistyped year landing an expense in 2036. */
 const expenseDate = z.coerce
@@ -92,6 +92,24 @@ const listExpensesQuery = paginationQuery.extend({
   memberId: objectId.optional(),
   /** Expenses this member *entered*. See expenseRepository.listByGroup. */
   paidBy: objectId.optional(),
+  /** Substring of the description or the notes, case-insensitive. */
+  q: z.string().trim().max(80).optional(),
+  /** One of LEDGER_CATEGORIES, or `UNCATEGORISED` for the ones with none. */
+  category: z.enum([...LEDGER_CATEGORIES, "UNCATEGORISED"]).optional(),
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+  /**
+   * Which date `from`/`to` and the date sort refer to.
+   *
+   * A closed set rather than a free string: it is interpolated into a Mongo query
+   * key, and a caller-controlled field name there would let anyone sort and filter
+   * by any field on the document.
+   */
+  dateField: z.enum(["expenseDate", "createdAt"]).optional().default("expenseDate"),
+  sort: z
+    .enum(["date_desc", "date_asc", "amount_desc", "amount_asc"])
+    .optional()
+    .default("date_desc"),
 });
 
 module.exports = {

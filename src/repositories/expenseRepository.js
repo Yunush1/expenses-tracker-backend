@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 const Expense = require("../models/expense");
-const { decodeCursor } = require("../utils/cursor");
+const { decodeKeyCursor, keyCursorFilter } = require("../utils/cursor");
 
 const create = (payload, session = null) =>
   Expense.create(session ? [payload] : payload, session ? { session } : undefined).then((res) =>
@@ -19,8 +19,41 @@ const findByClientRequestId = (groupId, clientRequestId) => {
  * Over-fetches by one row so the caller can detect a further page without a
  * second count query. Cursor is an ObjectId anchor, not an offset.
  */
-const listByGroup = async (groupId, { cursor, limit, memberId, paidBy } = {}) => {
+/** Anything a user types is a literal, not a pattern. */
+const escapeRegex = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** `date` means whichever date field the caller chose — see `dateField` below. */
+const SORT_FIELDS = {
+  date: (dateField) => dateField,
+  amount: () => "amountMinor",
+};
+
+const listByGroup = async (
+  groupId,
+  {
+    cursor,
+    limit,
+    memberId,
+    paidBy,
+    q,
+    category,
+    from,
+    to,
+    /**
+     * Which date the filters and the sort mean.
+     *
+     * `expenseDate` is when the money moved; `createdAt` is when somebody typed it
+     * in. They are routinely days apart — a trip settled up the following weekend
+     * — and the two questions ("what did we spend in Goa?" versus "what got added
+     * since I last looked?") have different answers. Defaulting to `expenseDate`
+     * keeps the existing behaviour.
+     */
+    dateField = "expenseDate",
+    sort = "date_desc",
+  } = {}
+) => {
   const filter = { groupId, isDeleted: false };
+  const and = [];
 
   /**
    * Two different questions, deliberately two filters.
@@ -35,14 +68,72 @@ const listByGroup = async (groupId, { cursor, limit, memberId, paidBy } = {}) =>
   if (paidBy) {
     filter.paidBy = paidBy;
   } else if (memberId) {
-    filter.$or = [{ paidBy: memberId }, { "shares.memberId": memberId }];
+    // Inside `$and` rather than on the filter, so it cannot collide with the
+    // cursor's own `$or` — two `$or` keys on one object silently keep the last.
+    and.push({ $or: [{ paidBy: memberId }, { "shares.memberId": memberId }] });
   }
 
-  const anchor = decodeCursor(cursor);
-  if (anchor) filter._id = { $lt: anchor };
+  /**
+   * Search across the description and the notes.
+   *
+   * A case-insensitive substring rather than a text index: the search is always
+   * scoped to one group, which is hundreds of rows at most, and `$text` would
+   * match whole words only — so "grocer" would not find "groceries", which is
+   * exactly how people search.
+   */
+  if (q && String(q).trim()) {
+    const pattern = new RegExp(escapeRegex(String(q).trim()), "i");
+    and.push({ $or: [{ description: pattern }, { notes: pattern }] });
+  }
+
+  if (category) {
+    // "Uncategorised" is a real answer, and the field is null on rows written
+    // before inference existed as well as on genuinely unmatched ones.
+    filter.category = category === "UNCATEGORISED" ? { $in: [null, ""] } : category;
+  }
+
+  /**
+   * Whole days, not instants.
+   *
+   * A date picker sends a date; what arrives is a timestamp with whatever
+   * time-of-day the browser attached. Compared literally, "from 5 August" means
+   * "from 5 August at 14:32", and the lunch someone logged that morning silently
+   * falls outside a range they picked to include it. Nobody reads a date filter
+   * as having a time component, so neither does this.
+   *
+   * Day boundaries are UTC, which is the same simplification the rest of the app
+   * makes (points use a UTC day key). For a user more than a few hours off UTC an
+   * expense near midnight can land on the neighbouring day — visible only at the
+   * very edge of a range, and the alternative is threading a timezone through
+   * every list request.
+   */
+  const range = {};
+  if (from) {
+    const start = new Date(from);
+    start.setUTCHours(0, 0, 0, 0);
+    range.$gte = start;
+  }
+  if (to) {
+    const end = new Date(to);
+    end.setUTCHours(23, 59, 59, 999);
+    range.$lte = end;
+  }
+  if (Object.keys(range).length > 0) filter[dateField] = range;
+
+  const [sortKey, sortDir] = String(sort).split("_");
+  const field = (SORT_FIELDS[sortKey] || SORT_FIELDS.date)(dateField);
+  const direction = sortDir === "asc" ? 1 : -1;
+
+  const anchor = decodeKeyCursor(cursor);
+  const cursorFilter = keyCursorFilter(anchor, field, direction);
+  if (cursorFilter) and.push(cursorFilter);
+
+  if (and.length > 0) filter.$and = and;
 
   return Expense.find(filter)
-    .sort({ _id: -1 })
+    // `_id` breaks ties, which is what makes paging total when several expenses
+    // share a date or an amount.
+    .sort({ [field]: direction, _id: direction })
     .limit(limit + 1)
     .lean();
 };

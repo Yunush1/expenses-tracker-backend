@@ -3,8 +3,9 @@ const expenseService = require("../services/expenseService");
 const { ok, created } = require("../utils/apiResponse");
 
 exports.listExpenses = asyncHandler(async (req, res) => {
-  const { cursor, limit, memberId, paidBy } = req.validatedQuery;
-  const data = await expenseService.listExpenses(req.group, { cursor, limit, memberId, paidBy });
+  // Passed straight through: every field is already validated and constrained to
+  // a closed set, so enumerating them again here is a second place to forget one.
+  const data = await expenseService.listExpenses(req.group, req.validatedQuery);
   return ok(res, data);
 });
 

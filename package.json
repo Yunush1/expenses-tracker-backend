@@ -14,6 +14,8 @@
     "mirror:check": "cross-env NODE_ENV=development node scripts/check-mirror.js",
     "draft:check": "cross-env NODE_ENV=development node scripts/check-draft.js",
     "join:check": "cross-env NODE_ENV=development node scripts/check-join-approval.js",
+    "filters:check": "cross-env NODE_ENV=development node scripts/check-expense-filters.js",
+    "ledger:check": "cross-env NODE_ENV=development node scripts/check-ledger-type-change.js",
     "mirror:backfill": "cross-env NODE_ENV=development node scripts/backfill-mirrors.js",
     "mirror:backfill:dry": "cross-env NODE_ENV=development node scripts/backfill-mirrors.js --dry",
     "nudge:test": "cross-env NODE_ENV=development node scripts/send-test-nudge.js",

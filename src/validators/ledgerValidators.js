@@ -38,6 +38,15 @@ const createEntrySchema = z.object({
 });
 
 const updateEntrySchema = z.object({
+  /**
+   * Changing what an entry *is* — "I lent that" when it was logged as spent.
+   *
+   * Editable because the mistake is easy to make and, before this, unfixable
+   * except by deleting and retyping, which loses the repayment history that was
+   * the reason to keep the row. What each change is allowed to do to that history
+   * is decided in ledgerService, not here.
+   */
+  type: z.nativeEnum(LEDGER_ENTRY_TYPES).optional(),
   amount: amount.optional(),
   description: trimmedString(LIMITS.LEDGER_DESC_MAX, "Description").optional(),
   counterpartyName,

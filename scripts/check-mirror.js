@@ -89,9 +89,12 @@ const check = (label, actual, want) =>
   check("it is labelled with the group", mirror.sourceGroupName, "Goa trip");
   check("it is marked as mirrored", mirror.source, "GROUP_EXPENSE");
 
-  console.log("\n--- the category is inferred, since group expenses have none ---");
-  check("'Dinner' → FOOD", mirror.category, "FOOD");
-  check("the group expense itself still has none", expense.category ?? null, null);
+  console.log("\n--- the category is inferred at write time and inherited ---");
+  check("the mirror is categorised", mirror.category, "FOOD");
+  // Stored on the expense too, because a category has to be a WHERE clause for
+  // the group list's filter to work — the mirror inherits rather than re-derives.
+  const storedExpense = await Expense.findById(expense.id).lean();
+  check("the group expense carries it as well", storedExpense.category, "FOOD");
 
   const { inferCategory } = require("../src/utils/inferCategory");
   check("'Auto to station' → TRAVEL", inferCategory("Auto to station"), "TRAVEL");

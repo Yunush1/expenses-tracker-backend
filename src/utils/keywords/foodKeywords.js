@@ -113,6 +113,54 @@ const FOOD_KEYWORDS = [
     "zepto",
     "blinkit",
     "bigbasket",
-    "instamart"
+    "instamart",
+
+    /**
+     * Meals and places, as opposed to ingredients.
+     *
+     * These matter more than the ingredient list for group expenses: people type
+     * "Dinner" and "Lunch at the dhaba", not "paneer". Without them the commonest
+     * shared expense there is falls through uncategorised.
+     */
+    "food",
+    "meal",
+    "breakfast",
+    "brunch",
+    "lunch",
+    "dinner",
+    "supper",
+    "snack",
+    "snacks",
+    "restaurant",
+    "cafe",
+    "dhaba",
+    "canteen",
+    "mess",
+    "buffet",
+    "thali",
+    "biryani",
+    "tiffin",
+    "bakery",
+    "cake",
+    "icecream",
+    "ice cream",
+    "dessert",
+    "sweets",
+    "mithai",
+
+    // Shopping for food, which is the same category as eating it.
+    "grocery",
+    "groceries",
+    "grocer",
+    "supermarket",
+    "kirana",
+    "vegetable",
+    "vegetables",
+    "sabji",
+    "fruit",
+    "fruits",
+    "market",
+    "dmart",
+    "reliance fresh"
 ];
 module.exports = { FOOD_KEYWORDS };

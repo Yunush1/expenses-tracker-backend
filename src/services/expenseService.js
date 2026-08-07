@@ -11,8 +11,9 @@ const {
   normalizeSplitValues,
 } = require("../utils/splitCalculator");
 const { toMinor, formatMinor } = require("../utils/money");
+const { inferCategory } = require("../utils/inferCategory");
 const { toExpenseDTO } = require("../serializers");
-const { buildPage } = require("../utils/cursor");
+const { buildPage, buildKeyPage } = require("../utils/cursor");
 const { ACTIVITY_TYPES, LIMITS, SPLIT_TYPES, ERROR_CODES } = require("../constants");
 const { BadRequestError, NotFoundError, ConflictError, ForbiddenError } = require("../errors");
 
@@ -121,6 +122,18 @@ const createExpense = async ({ group, actor, dto }) => {
   const expense = await expenseRepository.create({
     groupId: group._id,
     description: dto.description,
+    /**
+     * Inferred from the description at write time, not guessed at read time.
+     *
+     * It has to be *stored* for filtering to work: a category derived in the
+     * browser cannot be a `WHERE` clause, so "show me food" would either scan
+     * every expense or silently filter one page. Storing it also means the
+     * personal-ledger mirror inherits it rather than re-deriving the same answer.
+     *
+     * An explicit category from the client still wins, for the day a picker
+     * exists (docs/08-PERSONAL-LEDGER.md §12).
+     */
+    category: inferCategory(dto.description, dto.category),
     amountMinor,
     currencyCode: group.currency,
     paidBy: dto.paidBy,
@@ -220,6 +233,7 @@ const createExpenseBatch = async ({ group, actor, dto }) => {
       doc: {
         groupId: group._id,
         description: item.description,
+        category: inferCategory(item.description, item.category),
         amountMinor,
         currencyCode: group.currency,
         paidBy,
@@ -357,6 +371,8 @@ const updateExpense = async ({ group, actor, expenseId, dto }) => {
     {
       $set: {
         description: dto.description ?? existing.description,
+        // Re-inferred with the description, so an edit does not leave the old label.
+        category: inferCategory(dto.description ?? existing.description, dto.category),
         amountMinor,
         paidBy,
         splitType,
@@ -448,16 +464,18 @@ const deleteExpense = async ({ group, actor, expenseId }) => {
   return true;
 };
 
-const listExpenses = async (
-  group,
-  { cursor, limit = LIMITS.DEFAULT_PAGE_SIZE, memberId, paidBy } = {}
-) => {
+const listExpenses = async (group, options = {}) => {
+  const { limit = LIMITS.DEFAULT_PAGE_SIZE, dateField = "expenseDate", sort = "date_desc" } = options;
+
   const [rows, nameMap] = await Promise.all([
-    expenseRepository.listByGroup(group._id, { cursor, limit, memberId, paidBy }),
+    expenseRepository.listByGroup(group._id, { ...options, limit, dateField, sort }),
     memberService.buildNameMap(group._id),
   ]);
 
-  const page = buildPage(rows, limit);
+  // The cursor has to encode whatever the list is sorted by, or "load more"
+  // silently drops rows — see utils/cursor.js.
+  const [sortKey] = String(sort).split("_");
+  const page = buildKeyPage(rows, limit, sortKey === "amount" ? "amountMinor" : dateField);
 
   return {
     items: page.items.map((expense) => toExpenseDTO(expense, nameMap, group.currency)),

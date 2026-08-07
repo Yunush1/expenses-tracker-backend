@@ -40,6 +40,8 @@ const allowShared = process.argv.includes("--allow-shared");
 const repair = process.argv.includes("--repair-ambiguous");
 /** Fill in categories on mirrors written before inference existed. */
 const recategorise = process.argv.includes("--recategorise");
+/** The same, for the group expenses themselves — what the category filter reads. */
+const categoriseExpenses = process.argv.includes("--categorise-expenses");
 const email = arg("email");
 const sinceRaw = arg("since");
 const since = sinceRaw ? new Date(sinceRaw) : null;
@@ -66,6 +68,41 @@ const since = sinceRaw ? new Date(sinceRaw) : null;
       "WARNING: LEDGER_MIRROR_GROUP_EXPENSES is false, so new expenses are not\n" +
       "         being mirrored and these rows will not be kept in step with edits.\n"
     );
+  }
+
+  if (categoriseExpenses) {
+    /**
+     * Group expenses written before categories were inferred at save time.
+     *
+     * Without this the category filter finds nothing historical, which reads as
+     * a broken filter rather than as missing data.
+     */
+    const Expense = require("../src/models/expense");
+    const { inferCategory } = require("../src/utils/inferCategory");
+
+    const rows = await Expense.find({
+      isDeleted: { $ne: true },
+      $or: [{ category: null }, { category: "" }, { category: { $exists: false } }],
+    })
+      .select("_id description")
+      .lean();
+
+    let updated = 0;
+    for (const row of rows) {
+      const category = inferCategory(row.description);
+      if (!category) continue;
+      updated += 1;
+      if (!dryRun) await Expense.updateOne({ _id: row._id }, { $set: { category } });
+    }
+
+    console.log(
+      `  ${updated} of ${rows.length} uncategorised expense(s) ${
+        dryRun ? "would be labelled" : "labelled"
+      } from their description.\n` +
+      `  ${rows.length - updated} had nothing recognisable and stay blank.\n`
+    );
+    await mongoose.disconnect();
+    return;
   }
 
   if (recategorise) {

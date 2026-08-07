@@ -75,6 +75,15 @@ const LEDGER_ENTRY_TYPES = Object.freeze({
 });
 
 /** Small and fixed. A free-text category field becomes forty spellings of "food". */
+/**
+ * Categories a spend can carry.
+ *
+ * **This list and the rules in `utils/inferCategory.js` must agree.** The model
+ * validates against this enum, so a rule producing a category that is missing here
+ * fails the save — and because the mirror write swallows its errors by design,
+ * the failure is silent: expenses simply stop appearing in the ledger. If you add
+ * a rule, add its category here in the same commit.
+ */
 const LEDGER_CATEGORIES = Object.freeze([
   "FOOD",
   "TRAVEL",
@@ -83,6 +92,14 @@ const LEDGER_CATEGORIES = Object.freeze([
   "HEALTH",
   "ENTERTAINMENT",
   "RENT",
+  "HOME",
+  "PERSONAL_CARE",
+  "EDUCATION",
+  "OFFICE",
+  "SUBSCRIPTIONS",
+  "PETS",
+  "KIDS",
+  "FINANCE",
   "OTHER",
 ]);
 
