@@ -3,6 +3,7 @@ const Member = require("../../models/member");
 const Group = require("../../models/group");
 const { GROUP_STATUS, SPLIT_TYPES, LIMITS } = require("../../constants");
 const logger = require("../../utils/logger");
+const { SYSTEM_PROMPT } = require("./systemPromt");
 
 /**
  * "Add 1200 for dinner, split with everyone" → a **draft** the user confirms.
@@ -80,32 +81,6 @@ const writableGroups = async (user) => {
   );
 };
 
-const SYSTEM_PROMPT = `You turn a short sentence into a structured expense for a bill-splitting app.
-You do NOT create anything — a person reviews your output and confirms it.
-
-Return ONLY a JSON object, no prose, no markdown fence, with these keys:
-{
-  "isExpense": boolean,
-  "groupName": string | null,
-  "description": string,
-  "amount": string,
-  "paidByName": string | null,
-  "participantNames": string[] | null,
-  "splitType": "EQUAL" | "EXACT",
-  "confidence": "high" | "low",
-  "missing": string[]
-}
-
-Rules:
-- "amount" is the total of the bill as a plain decimal string, e.g. "1200" or "349.50". No currency symbol, no commas, no words. If the sentence says "twelve hundred", write "1200".
-- Never invent an amount. If there is no number, set isExpense false.
-- "description" is a short label for the purchase — 2 or 3 words, e.g. "Dinner", "Auto to airport". Do not put the amount in it.
-- Use ONLY names from the member list given below. If someone is mentioned who is not in that list, leave them out and add "unknown person: <name>" to "missing".
-- "paidByName" is who paid. If the sentence does not say, use null — the app defaults it to the person speaking.
-- "participantNames" is who shares the cost. "everyone", "all of us", "the group" means null, which the app reads as every member. A cost split with nobody else is just the speaker.
-- Use splitType "EQUAL" unless the sentence gives each person a different exact amount.
-- Set "confidence" to "low" whenever you had to guess at the amount, the group, or who is involved.
-- Set isExpense false for anything that is a question, a correction, or a request to delete or change something.`;
 
 /** Whitespace and fences the model sometimes wraps JSON in, despite being asked not to. */
 const parseJson = (raw) => {
