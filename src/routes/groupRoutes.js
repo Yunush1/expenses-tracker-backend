@@ -1,6 +1,7 @@
 const express = require("express");
 
 const groupController = require("../controllers/groupController");
+const joinRequestController = require("../controllers/joinRequestController");
 const balanceController = require("../controllers/balanceController");
 const activityController = require("../controllers/activityController");
 const memberRoutes = require("./memberRoutes");
@@ -16,6 +17,7 @@ const {
 const {
   loadGroup,
   resolveMember,
+  requireMember,
   requireCreator,
   requireActiveGroup,
 } = require("../middlewares/groupAccess");
@@ -25,6 +27,10 @@ const {
   updateGroupSchema,
   lookupQuerySchema,
 } = require("../validators/groupValidators");
+const {
+  createJoinRequestSchema,
+  decideJoinRequestSchema,
+} = require("../validators/joinRequestValidators");
 const { listActivitiesQuery } = require("../validators/activityValidators");
 
 const router = express.Router();
@@ -44,6 +50,26 @@ router.get(
   validate(lookupQuerySchema, "query"),
   groupController.lookupByJoinCode
 );
+
+/**
+ * Asking to be let in, and checking whether anybody has answered.
+ *
+ * Declared before the "/:inviteCode" mount, and deliberately outside it: the
+ * person asking has no invite code — that is the entire point of the flow, since
+ * withholding it is what makes a guessed short code worthless
+ * (docs/13-JOIN-APPROVAL.md).
+ *
+ * `codeLookupLimiter` on the create route because it takes the same guessable
+ * code the lookup does, and must be no cheaper to attack.
+ */
+router.post(
+  "/join-requests",
+  codeLookupLimiter,
+  validate(createJoinRequestSchema),
+  joinRequestController.createRequest
+);
+router.get("/join-requests/:requestId", joinRequestController.getStatus);
+router.delete("/join-requests/:requestId", joinRequestController.cancel);
 
 // Everything below is scoped to one group. `loadGroup` + `resolveMember` run for
 // every route: reads are open to anyone with the link, writes add their own guards.
@@ -72,6 +98,27 @@ router.get(
   "/:inviteCode/activities",
   validate(listActivitiesQuery, "query"),
   activityController.listActivities
+);
+
+/**
+ * Answering a request. Behind `requireMember`, because letting someone into a
+ * group is a decision only the people already in it can make — and because the
+ * push notification's Accept button posts here with the device id it was
+ * delivered to, which is checked exactly like a tap inside the app.
+ */
+router.get(
+  "/:inviteCode/join-requests",
+  requireMember,
+  joinRequestController.listPending
+);
+
+router.post(
+  "/:inviteCode/join-requests/:requestId",
+  writeLimiter,
+  requireActiveGroup,
+  requireMember,
+  validate(decideJoinRequestSchema),
+  joinRequestController.decide
 );
 
 /* ---------------------------- Sub-resources ------------------------------ */

@@ -14,7 +14,9 @@ exports.createGroup = asyncHandler(async (req, res) => {
 });
 
 exports.lookupByJoinCode = asyncHandler(async (req, res) => {
-  const data = await groupService.lookupByJoinCode(req.query.code);
+  // The device is passed so a browser already in the group skips the approval
+  // dance — see groupService.lookupByJoinCode.
+  const data = await groupService.lookupByJoinCode(req.query.code, req.deviceId);
   return ok(res, data);
 });
 

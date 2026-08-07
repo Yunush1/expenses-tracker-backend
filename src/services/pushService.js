@@ -209,6 +209,134 @@ const registerToken = async ({ deviceId, token, userAgent, timeZone }) => {
   return row;
 };
 
+/**
+ * "Someone wants to join" — the one notification that carries buttons.
+ *
+ * ## Why the recipient's own device id is in the payload
+ *
+ * The service worker has to be able to call the API when Accept is tapped, and it
+ * cannot read `localStorage` to find out which browser it is. Rather than invent a
+ * signed action token, the payload simply carries the id of the device it is being
+ * delivered *to* — which that device already knows, so nothing is disclosed. The
+ * decide endpoint then re-checks that the id belongs to an active member of the
+ * group, exactly as it would for a tap inside the app.
+ *
+ * Each device therefore gets its own message. That is a send per member instead of
+ * one multicast, which is the cost of the buttons working; a join request is rare
+ * and a group is at most fifty people.
+ */
+const notifyJoinRequest = async ({ group, joinRequest }) => {
+  try {
+    if (!isPushEnabled()) return null;
+
+    const messaging = getMessaging();
+
+    // Everyone already in, minus the person asking — their device is not a member
+    // yet, so it is not in this list anyway.
+    const members = await memberRepository.findByGroup(group._id);
+    const deviceIds = [
+      ...new Set(members.filter((m) => m.isActive).flatMap((m) => m.deviceIds || [])),
+    ].filter((id) => id && id !== joinRequest.deviceId);
+
+    if (deviceIds.length === 0) return null;
+
+    const rows = await pushTokenRepository.findByDeviceIds(deviceIds);
+    if (rows.length === 0) return null;
+
+    const dead = [];
+    let sent = 0;
+
+    for (const row of rows) {
+      const message = {
+        token: row.token,
+        data: {
+          title: group.name,
+          body: `${joinRequest.name} wants to join`,
+          type: "JOIN_REQUEST",
+          groupName: group.name,
+          inviteCode: group.inviteCode,
+          requestId: String(joinRequest._id),
+          requesterName: joinRequest.name,
+          /** The recipient's own id — see above. */
+          deviceId: row.deviceId,
+          url: `${config.appBaseUrl}/g/${group.inviteCode}?requests=1`,
+          // Per-request, so two people asking produce two notifications rather
+          // than one replacing the other.
+          tag: `${group.inviteCode}:join:${joinRequest._id}`,
+        },
+        webpush: {
+          headers: {
+            // Shorter than the activity TTL: this one has a 24h deadline, and a
+            // notification delivered after it expires can only disappoint.
+            TTL: "86400",
+            Urgency: "high",
+          },
+        },
+      };
+
+      try {
+        // eslint-disable-next-line no-await-in-loop -- one per device, see above
+        await messaging.send(message);
+        sent += 1;
+      } catch (err) {
+        if (DEAD_TOKEN_CODES.has(err?.code)) dead.push(row.token);
+        else logger.warn(`[pushService] Join request send failed: ${err.message}`);
+      }
+    }
+
+    if (dead.length > 0) await pushTokenRepository.removeByTokens(dead);
+
+    logger.info(`[pushService] Join request → ${sent} device(s)`);
+    return { sent };
+  } catch (err) {
+    logger.warn(`[pushService] notifyJoinRequest failed: ${err.message}`);
+    return null;
+  }
+};
+
+/** "You're in" — or not. Sent to the requester's device only. */
+const notifyJoinDecision = async ({ group, joinRequest, approved }) => {
+  try {
+    if (!isPushEnabled()) return null;
+
+    const rows = await pushTokenRepository.findByDeviceIds([joinRequest.deviceId]);
+    if (rows.length === 0) return null;
+
+    const messaging = getMessaging();
+
+    await Promise.all(
+      rows.map((row) =>
+        messaging
+          .send({
+            token: row.token,
+            data: {
+              title: group.name,
+              body: approved
+                ? `You're in — tap to open ${group.name}`
+                : `Your request to join ${group.name} wasn't accepted`,
+              type: approved ? "JOIN_APPROVED" : "JOIN_DECLINED",
+              groupName: group.name,
+              /**
+               * The invite code travels only on approval. A declined requester's
+               * device must not end up holding the key it was refused.
+               */
+              ...(approved ? { inviteCode: group.inviteCode } : {}),
+              url: approved ? `${config.appBaseUrl}/g/${group.inviteCode}` : `${config.appBaseUrl}/`,
+              tag: `join-decision:${joinRequest._id}`,
+            },
+            webpush: { headers: { TTL: "86400", Urgency: "high" } },
+          })
+          .catch(() => null)
+      )
+    );
+
+    return { sent: rows.length };
+  } catch (err) {
+    logger.warn(`[pushService] notifyJoinDecision failed: ${err.message}`);
+    return null;
+  }
+};
+
 const unregisterDevice = (deviceId) => pushTokenRepository.removeByDeviceId(deviceId);
 
 /** What this device has switched on. Unregistered devices report the defaults. */
@@ -229,6 +357,8 @@ const setDailyNudge = async (deviceId, enabled) => {
 
 module.exports = {
   notifyActivity,
+  notifyJoinRequest,
+  notifyJoinDecision,
   registerToken,
   unregisterDevice,
   getPreferences,

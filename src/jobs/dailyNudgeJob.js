@@ -1,6 +1,7 @@
 const cron = require("node-cron");
 const dailyNudgeService = require("./../services/dailyNudgeService");
 const ledgerReminderService = require("./../services/ledgerReminderService");
+const joinRequestService = require("./../services/joinRequestService");
 const { isPushEnabled } = require("../config/firebase");
 const config = require("../config/env");
 const logger = require("../utils/logger");
@@ -44,6 +45,16 @@ const tick = async () => {
     const results = await Promise.allSettled([
       dailyNudgeService.run(),
       ledgerReminderService.run(),
+      /**
+       * Abandoned join requests, aged out.
+       *
+       * Riding on this tick rather than its own schedule because it is one
+       * indexed `updateMany` — a second cron for that would be more moving parts
+       * than the work justifies. It is deliberately *not* gated on push being
+       * configured: a request must stop being answerable after a day whether or
+       * not anybody was ever notified about it (docs/13-JOIN-APPROVAL.md §6).
+       */
+      joinRequestService.expireStale(),
     ]);
 
     for (const result of results) {

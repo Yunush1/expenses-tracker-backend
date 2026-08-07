@@ -71,13 +71,24 @@ const allocateJoinCode = async (attempts = 5) => {
 };
 
 /**
- * Short code → invite code. The one place a group can be reached without its link,
- * which is why the route carries a much stricter rate limit than anything else.
+ * Short code → the group's *name*, and nothing else.
  *
- * A wrong code and a deleted group are reported identically: neither should confirm
- * that some other group exists.
+ * ## This used to return the invite code, and that was the bug
+ *
+ * The short code is 8 characters from a 25-letter alphabet — about 37 bits, typed
+ * by hand, sometimes read aloud across a table. The strict rate limiter on this
+ * route slows enumeration; it does not prevent it. So returning the invite code
+ * here meant a guessed code was **full access**: every expense, every name, every
+ * balance, no further step.
+ *
+ * Now it returns only enough to show "Is this the group you meant?" and the caller
+ * has to ask a member to be let in (docs/13-JOIN-APPROVAL.md). Guessing a code now
+ * buys the chance to appear in somebody's notification tray and be declined.
+ *
+ * A wrong code and a deleted group are still reported identically: neither should
+ * confirm that some other group exists.
  */
-const lookupByJoinCode = async (code) => {
+const lookupByJoinCode = async (code, deviceId) => {
   const normalized = normalizeJoinCode(code);
 
   if (!isValidJoinCode(normalized)) {
@@ -86,13 +97,28 @@ const lookupByJoinCode = async (code) => {
 
   const group = await groupRepository.findByJoinCode(normalized);
 
-  if (!group) {
+  if (!group || group.status !== GROUP_STATUS.ACTIVE) {
     throw new NotFoundError("No group found with that code", ERROR_CODES.GROUP_NOT_FOUND);
   }
 
-  // Only the handle — the caller then goes through the normal preview and join
-  // flow, so this adds no way to read a group that the link would not also give.
-  return { inviteCode: group.inviteCode };
+  /**
+   * Already a member on this browser — approval would be theatre. This is the one
+   * path that still hands the invite code back from a short code, and it requires
+   * the device to already be in the group, which a guesser's is not.
+   */
+  if (deviceId) {
+    const existing = await memberRepository.findByDevice(group._id, deviceId);
+    if (existing) {
+      return { groupName: group.name, memberCount: group.memberCount, inviteCode: group.inviteCode };
+    }
+  }
+
+  return {
+    groupName: group.name,
+    memberCount: group.memberCount,
+    /** Tells the client to collect a name and ask, rather than navigate. */
+    requiresApproval: true,
+  };
 };
 
 const createGroup = async ({ name, description, creatorName, deviceId, currency, joinCode }) => {
