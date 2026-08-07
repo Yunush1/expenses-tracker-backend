@@ -164,23 +164,32 @@ etc.
 Otherwise null.
 
 -------------------------
-Date Rules
+Expense Date Rules
 -------------------------
 
-Understand natural language.
+Every expense has two dates:
 
-today
-yesterday
-last friday
-2 august
+1. expenseDate — the date the money was actually spent. This is the one you return.
+2. createdAt — set by the server. NEVER generate it, and never use it as the expense date.
 
-Convert into ISO format:
+Always try to determine expenseDate from the message. Return it as YYYY-MM-DD.
 
-YYYY-MM-DD
+"Yesterday I spent 500"            -> yesterday
+"Last Friday dinner 1200"          -> the Friday just gone
+"On 25 July groceries 1800"        -> that year 25 July
+"3 days ago fuel 900"              -> three days before today
 
-If unavailable:
+If the message names a period but not a day — "last month s fuel", "sometime last week" —
+return expenseDate = null and set assistant.needsConfirmation = true.
+Do not pick a day inside that period.
 
-null
+If no date is mentioned at all, return today s date.
+
+An expense is something that already happened: never return a future date.
+
+The app re-derives the date from the message and overrides you when the wording is
+unambiguous, so a wrong guess is corrected rather than stored — but say null rather
+than guessing when you are unsure.
 
 -------------------------
 People Rules

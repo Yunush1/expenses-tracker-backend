@@ -4,6 +4,7 @@ const Group = require("../../models/group");
 const { GROUP_STATUS, SPLIT_TYPES, LIMITS } = require("../../constants");
 const logger = require("../../utils/logger");
 const { SYSTEM_PROMPT } = require("./systemPromt");
+const { resolveExpenseDate } = require("../../utils/parseExpenseDate");
 
 /**
  * "Add 1200 for dinner, split with everyone" → a **draft** the user confirms.
@@ -135,6 +136,7 @@ const draftExpense = async (user, message) => {
     const raw = await aiProvider.complete({
       system: SYSTEM_PROMPT,
       user: [
+        `Today is ${new Date().toISOString().slice(0, 10)}.`,
         `The person speaking is "${candidates[0].me?.name || "me"}".`,
         "Their groups and members:",
         roster,
@@ -194,8 +196,27 @@ const draftExpense = async (user, message) => {
   // A split needs somebody in it; fall back to everyone rather than to nobody.
   const finalParticipants = participants.length > 0 ? participants : members;
 
+  /**
+   * When the money was spent — re-derived from the user's own words.
+   *
+   * The model's answer is the fallback, not the source: "last Friday" is date
+   * arithmetic, and a wrong month here silently moves the expense out of the
+   * monthly total someone will later check. See utils/parseExpenseDate.js.
+   */
+  const when = resolveExpenseDate({
+    text: message,
+    modelDate: parsed.expenseDate,
+  });
+
   return {
     needsGroup: false,
+    expenseDate: when.date,
+    /**
+     * True when the message named a period but not a day — "last month's fuel".
+     * The draft still carries today's date so it is usable; the card says the
+     * date is a guess rather than picking a day the user never chose.
+     */
+    dateUncertain: when.needsConfirmation || Boolean(parsed.assistant?.needsConfirmation),
     groupId: String(group._id),
     groupName: group.name,
     inviteCode: group.inviteCode,

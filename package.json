@@ -20,7 +20,8 @@
     "mirror:backfill:dry": "cross-env NODE_ENV=development node scripts/backfill-mirrors.js --dry",
     "nudge:test": "cross-env NODE_ENV=development node scripts/send-test-nudge.js",
     "nudge:dry": "cross-env NODE_ENV=development node scripts/send-test-nudge.js --dry",
-    "tunel": "cross-env NODE_ENV=development node server.js --tunel"
+    "tunel": "cross-env NODE_ENV=development node server.js --tunel",
+    "date:check": "cross-env NODE_ENV=development node scripts/check-expense-date.js"
   },
   "keywords": [
     "expense",
