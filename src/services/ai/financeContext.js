@@ -5,6 +5,7 @@ const Expense = require("../../models/expense");
 const Ledger = require("../../models/ledger");
 const LedgerEntry = require("../../models/ledgerEntry");
 
+const contextCache = require("./contextCache");
 const balanceService = require("../balanceService");
 const ledgerService = require("../ledgerService");
 const settlementService = require("../settlementService");
@@ -36,11 +37,25 @@ const { GROUP_STATUS, LEDGER_ENTRY_TYPES } = require("../../constants");
  * food?" is more exposure than the question needs.
  */
 
-/** Enough for "what did I spend recently" without shipping a life history. */
-const RECENT_LEDGER_ENTRIES = 40;
-const RECENT_GROUP_EXPENSES = 30;
-const RECENT_SETTLEMENTS = 15;
-const MAX_GROUPS = 8;
+/**
+ * Enough for "what did I spend recently" without shipping a life history.
+ *
+ * ## These are accuracy limits, not just cost limits
+ *
+ * Measured against the configured 8B model: at ~15,000 characters of context it
+ * loses rows — asked about a person it reported no such record, then listed that
+ * same person among the names it knew in the very next answer. Cut to ~1,000
+ * characters it answered correctly. Every row here competes for the model's
+ * attention with the row that actually holds the answer.
+ *
+ * So these caps buy correctness first and tokens second. Raise them only
+ * alongside a model that can hold the extra, and re-test the per-person
+ * questions afterwards — they fail first.
+ */
+const RECENT_LEDGER_ENTRIES = 20;
+const RECENT_GROUP_EXPENSES = 12;
+const RECENT_SETTLEMENTS = 8;
+const MAX_GROUPS = 5;
 
 const startOfMonth = () => {
   const now = new Date();
@@ -61,11 +76,29 @@ const iso = (date) => (date ? new Date(date).toISOString().slice(0, 10) : null);
  */
 const groupsForUser = async (user) => {
   const deviceIds = (user.deviceIds || []).filter(Boolean);
-  if (deviceIds.length === 0) return [];
 
-  const members = await Member.find({ deviceIds: { $in: deviceIds }, isActive: true })
-    .select("_id groupId name")
+  /**
+   * Two routes in, and the explicit one wins.
+   *
+   * `member.userId` is set only when the person confirmed "yes, that member is
+   * me" (docs/17-MEMBER-IDENTITY.md §6). It survives a new phone and a cleared
+   * browser, which the device route does not — so an account that has linked
+   * gets the right groups on a device it has never used before.
+   *
+   * The device route stays as the fallback for everyone who has not linked, and
+   * is still read-only: resolving which groups to *describe* never writes a
+   * `userId` onto a membership.
+   */
+  const members = await Member.find({
+    isActive: true,
+    $or: [
+      { userId: user._id },
+      ...(deviceIds.length ? [{ deviceIds: { $in: deviceIds } }] : []),
+    ],
+  })
+    .select("_id groupId name userId")
     .lean();
+
   if (members.length === 0) return [];
 
   const groups = await Group.find({
@@ -77,7 +110,20 @@ const groupsForUser = async (user) => {
     .limit(MAX_GROUPS)
     .lean();
 
-  const memberByGroup = new Map(members.map((m) => [String(m.groupId), m]));
+  /**
+   * One "me" per group, and the linked member wins.
+   *
+   * A browser can hold a stale membership in a group the account has since
+   * linked to a different member — describing the group as the wrong person
+   * would report someone else's balance as theirs. Sorting the confirmed link
+   * last means it overwrites the device guess in the map.
+   */
+  const memberByGroup = new Map(
+    [...members]
+      .sort((a, b) => Number(Boolean(a.userId)) - Number(Boolean(b.userId)))
+      .map((m) => [String(m.groupId), m])
+  );
+
   return groups.map((group) => ({ group, me: memberByGroup.get(String(group._id)) }));
 };
 
@@ -192,6 +238,154 @@ const describeGroup = async ({ group, me }) => {
   };
 };
 
+/**
+ * Per-person totals — the answer to "how much did I pay Krishan?".
+ *
+ * ## Why this has to exist
+ *
+ * The system prompt forbids the model from doing arithmetic, and rightly: a
+ * model that adds up a column of rupees will eventually get one wrong and say it
+ * fluently. But "how much have I paid X" is an aggregate across loans,
+ * repayments and group settlements — so with no precomputed figure the model is
+ * asked a question it is explicitly barred from working out. It then does the
+ * only honest thing left and says it cannot, which reads as the assistant being
+ * broken.
+ *
+ * So the total is computed here, in integer minor units, by the same rule the
+ * rest of the app uses. The model is handed the finished figure and asked to
+ * talk about it — which is the whole design (docs/10-AI-ASSISTANT.md §2).
+ *
+ * Names are merged case-insensitively because a ledger counterparty is typed by
+ * hand ("mayank") while a group member is a display name ("Mayank"), and to the
+ * person asking they are obviously the same human.
+ */
+const buildPeople = async (userId, ledgerId, currency, groupRefs) => {
+  const byKey = new Map();
+
+  const bucket = (name) => {
+    const key = String(name || "").trim().toLowerCase();
+    if (!key) return null;
+    if (!byKey.has(key)) {
+      byKey.set(key, {
+        name: String(name).trim(),
+        youLentThemMinor: 0,
+        youBorrowedFromThemMinor: 0,
+        theyPaidYouBackMinor: 0,
+        youPaidThemBackMinor: 0,
+        theyOweYouMinor: 0,
+        youOweThemMinor: 0,
+        youPaidThemInGroupsMinor: 0,
+        theyPaidYouInGroupsMinor: 0,
+        groups: [],
+      });
+    }
+    return byKey.get(key);
+  };
+
+  /**
+   * Every debt, not just the recent page.
+   *
+   * A total computed over the most recent forty rows is a wrong total, and a
+   * wrong total stated confidently is the failure this whole module is built to
+   * avoid. Debts are few by nature, so the full set is cheap.
+   */
+  if (ledgerId) {
+    const debts = await LedgerEntry.find({
+      ledgerId,
+      isDeleted: { $ne: true },
+      type: { $in: [LEDGER_ENTRY_TYPES.LENT, LEDGER_ENTRY_TYPES.BORROWED] },
+    })
+      .select("type amountMinor repayments counterpartyName settledAt")
+      .lean();
+
+    for (const debt of debts) {
+      const person = bucket(debt.counterpartyName);
+      if (!person) continue;
+
+      const repaid = (debt.repayments || []).reduce((sum, r) => sum + r.amountMinor, 0);
+      const outstanding = debt.amountMinor - repaid;
+
+      if (debt.type === LEDGER_ENTRY_TYPES.LENT) {
+        person.youLentThemMinor += debt.amountMinor;
+        person.theyPaidYouBackMinor += repaid;
+        person.theyOweYouMinor += outstanding;
+      } else {
+        person.youBorrowedFromThemMinor += debt.amountMinor;
+        person.youPaidThemBackMinor += repaid;
+        person.youOweThemMinor += outstanding;
+      }
+    }
+  }
+
+  /**
+   * Settlements are money that actually moved between two people, which is
+   * exactly what "how much did I pay them" means inside a group — distinct from
+   * a share of a bill, which is what they owed rather than what they handed over.
+   */
+  for (const { group, me } of groupRefs) {
+    const [settlements, others] = await Promise.all([
+      Settlement.find({
+        groupId: group._id,
+        $or: [{ fromMemberId: me._id }, { toMemberId: me._id }],
+      })
+        .select("fromMemberId toMemberId amountMinor")
+        .lean(),
+      Member.find({ groupId: group._id, isActive: true }).select("_id name").lean(),
+    ]);
+
+    /**
+     * Seed everyone in the group, settled with or not.
+     *
+     * Otherwise someone you share a group with but have never transferred money
+     * to is simply absent, and the prompt's rule for an absent name — "say you
+     * have no record of anyone by that name" — turns a correct ₹0.00 into a
+     * flat denial that the person exists. Zero is an answer; missing is not.
+     */
+    for (const other of others) {
+      if (String(other._id) === String(me._id)) continue;
+      const person = bucket(other.name);
+      if (person && !person.groups.includes(group.name)) person.groups.push(group.name);
+    }
+
+    const nameById = new Map(others.map((m) => [String(m._id), m.name]));
+
+    for (const s of settlements) {
+      const iPaid = String(s.fromMemberId) === String(me._id);
+      const otherId = iPaid ? s.toMemberId : s.fromMemberId;
+      const person = bucket(nameById.get(String(otherId)));
+      if (!person) continue;
+
+      if (iPaid) person.youPaidThemInGroupsMinor += s.amountMinor;
+      else person.theyPaidYouInGroupsMinor += s.amountMinor;
+
+      if (!person.groups.includes(group.name)) person.groups.push(group.name);
+    }
+  }
+
+  // Formatted last, so every sum above stayed an integer.
+  return [...byKey.values()]
+    .map((p) => ({
+      name: p.name,
+      inGroups: p.groups.length ? p.groups : undefined,
+      /** What each side has actually handed over, ledger and groups combined. */
+      youHavePaidThemInTotal: formatMinor(
+        p.youPaidThemBackMinor + p.youPaidThemInGroupsMinor,
+        currency
+      ),
+      theyHavePaidYouInTotal: formatMinor(
+        p.theyPaidYouBackMinor + p.theyPaidYouInGroupsMinor,
+        currency
+      ),
+      youLentThem: formatMinor(p.youLentThemMinor, currency),
+      youBorrowedFromThem: formatMinor(p.youBorrowedFromThemMinor, currency),
+      stillOwedToYou: formatMinor(p.theyOweYouMinor, currency),
+      youStillOweThem: formatMinor(p.youOweThemMinor, currency),
+      paidThemInGroupSettlements: formatMinor(p.youPaidThemInGroupsMinor, currency),
+      theyPaidYouInGroupSettlements: formatMinor(p.theyPaidYouInGroupsMinor, currency),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+};
+
 /** The personal ledger, if this account has one with anything in it. */
 const describeLedger = async (userId) => {
   const ledger = await Ledger.findOne({ userId }).lean();
@@ -264,7 +458,7 @@ const describeLedger = async (userId) => {
  * "you have no ledger" instead of the model inferring absence from silence —
  * which it does badly, usually by inventing something.
  */
-const build = async (userId) => {
+const buildFresh = async (userId) => {
   const user = await User.findById(userId).lean();
   if (!user) return null;
 
@@ -275,13 +469,54 @@ const build = async (userId) => {
 
   const groups = await Promise.all(groupRefs.map(describeGroup));
 
+  const ledgerDoc = await Ledger.findOne({ userId }).select("_id currency").lean();
+  const people = await buildPeople(
+    userId,
+    ledgerDoc?._id || null,
+    ledgerDoc?.currency || groupRefs[0]?.group?.currency || "INR",
+    groupRefs
+  );
+
   return {
     today: iso(new Date()),
     person: user.displayName || user.email || "there",
     ledger,
     groups,
+    /**
+     * Named counterparties with their totals already worked out. Listed
+     * separately from `ledger` and `groups` because a question about a *person*
+     * spans both, and the answer should not depend on the model noticing that.
+     */
+    people,
     hasAnything: Boolean(ledger) || groups.length > 0,
   };
 };
 
-module.exports = { build, RECENT_LEDGER_ENTRIES, RECENT_GROUP_EXPENSES };
+/**
+ * The snapshot, from cache when one is warm.
+ *
+ * Opening the assistant and asking two questions used to rebuild this three
+ * times — starters, then each answer — and every rebuild is a ledger summary
+ * plus a balance computation and a settlement optimiser run per group. The cache
+ * is dropped the moment the person changes anything of their own; see
+ * contextCache.js for the freshness argument and the one gap it names.
+ */
+const build = async (userId) => {
+  const cached = await contextCache.read(userId);
+  if (cached) return cached;
+
+  const fresh = await buildFresh(userId);
+  // Only cache a real snapshot. Caching `null` would pin "this account does not
+  // exist" for two minutes.
+  if (fresh) await contextCache.write(userId, fresh);
+
+  return fresh;
+};
+
+module.exports = {
+  build,
+  /** Bypasses the cache. For callers that must not read a snapshot at all. */
+  buildFresh,
+  RECENT_LEDGER_ENTRIES,
+  RECENT_GROUP_EXPENSES,
+};

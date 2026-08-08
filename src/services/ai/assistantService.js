@@ -1,4 +1,5 @@
 const aiProvider = require("./aiProvider");
+const AiMessage = require("../../models/aiMessage");
 const financeContext = require("./financeContext");
 const expenseDraft = require("./expenseDraft");
 const { suggestFollowUps } = require("./suggestions");
@@ -119,11 +120,65 @@ Rules:
 - A ledger spending entry with a "fromGroup" field is this person's own share of a group expense, already included in the ledger totals. The same bill also appears under that group as its full amount. Never add the two together, and when asked what they spent, use the ledger figure — it is their share, not what they fronted for everyone.
 - Inside a group: "members" shows what each person paid and their net position. "settlementPlan" is the app's own calculation of the fewest payments that clear every debt — quote it as-is when asked how to settle up, and never propose a different set of payments. "paymentsRecorded" are transfers that already happened, and are already reflected in the balances, so do not subtract them again.
 - When several groups are present, name the group you are talking about.
+
+Questions about a named person — "how much did I pay Krishan?", "what does Pankaj owe me?", "am I square with Mayank?":
+- Answer from "people". Every entry there is one person, with their totals already worked out across BOTH the ledger and group settlements. This is the only place a per-person total exists — do not try to reach the same number by adding up loans or expenses yourself, and do not answer such a question from "outstandingLoans" or "paymentsRecorded" alone, which each hold only one half of it.
+- Match the name case-insensitively and accept an obvious short form ("krishan" is "Krishan"). If the name genuinely is not in "people", say you have no record of anyone by that name and list the names you do have. Never assume a stranger is someone in the data.
+- Use the field that matches the question. "youHavePaidThemInTotal" is money this person handed over; "theyHavePaidYouInTotal" is money received; "youStillOweThem" and "stillOwedToYou" are what is left open. "How much did I pay X" is answered with youHavePaidThemInTotal, not with what was borrowed.
+- "Are we square / settled / even with X?" is about what is still OPEN, never about what has been paid. Read only "you still owe them" and "they still owe you". They are square only if BOTH are zero. If either is not zero, say what is still outstanding and in which direction — someone who has paid nothing but owes nothing is square, and someone who has paid a great deal but still owes ₹100 is not.
+- If a figure is ₹0.00, say so plainly — zero is an answer, not a gap.
+
 - Be brief: two or three sentences for a simple question. Use a short list only when comparing several items.
 - Write plainly, like a careful friend. No markdown headers, no preamble, no financial advice, no suggestions to invest or borrow.
-- Amounts are already formatted. Never reformat, round, or convert them.`;
+- Amounts are already formatted. Never reformat, round, or convert them.
+- The data below is the complete context. Never ask the user to supply data, paste JSON, or provide more information — if the answer is not in the context, say what you can see instead.`;
 
 const MAX_QUESTION_LENGTH = 500;
+
+/** How much of the transcript the drawer restores when it reopens. */
+const HISTORY_PAGE = 30;
+
+/**
+ * Keep the exchange, without making the answer wait on it.
+ *
+ * Not awaited and never allowed to throw: the person has their answer, and
+ * failing to file a transcript is not a reason to turn a successful reply into
+ * an error. Same reasoning as the push dispatch in `activityService.record`.
+ */
+const record = (userId, question, answer, usedContext) => {
+  AiMessage.create({ userId, question, answer: String(answer).slice(0, 4000), usedContext }).catch(
+    (err) => logger.warn(`[ai] Could not save the exchange: ${err.message}`)
+  );
+};
+
+/**
+ * The transcript, oldest last so the client can render it top to bottom.
+ *
+ * Fetched newest-first and reversed, because "the most recent 30" is the page
+ * worth keeping and a skip-based query over a growing collection is not.
+ */
+const history = async (userId, limit = HISTORY_PAGE) => {
+  const rows = await AiMessage.find({ userId })
+    .sort({ createdAt: -1 })
+    .limit(Math.min(limit, HISTORY_PAGE))
+    .lean();
+
+  return {
+    turns: rows.reverse().map((row) => ({
+      id: String(row._id),
+      question: row.question,
+      answer: row.answer,
+      usedContext: row.usedContext !== false,
+      at: row.createdAt,
+    })),
+  };
+};
+
+/** Forget the conversation. The ledger it was about is untouched. */
+const clearHistory = async (userId) => {
+  const { deletedCount } = await AiMessage.deleteMany({ userId });
+  return { cleared: deletedCount || 0 };
+};
 
 /**
  * Answer a question about the signed-in person's finances.
@@ -190,10 +245,14 @@ const ask = async (user, question, previous = null, asked = []) => {
    */
   const draft = await expenseDraft.draftExpense(user, trimmed).catch(() => null);
   if (draft) {
+    const answer = draft.needsGroup
+      ? "Which group is that for?"
+      : `${draft.description} · ${draft.amount} in ${draft.groupName}. Check it and tap Add.`;
+
+    record(userId, trimmed, answer, false);
+
     return {
-      answer: draft.needsGroup
-        ? "Which group is that for?"
-        : `${draft.description} · ${draft.amount} in ${draft.groupName}. Check it and tap Add.`,
+      answer,
       usedContext: false,
       draft,
       quota: { used: quota.used, limit: quota.limit, paidWithPoints, pointCost: tier.cost },
@@ -207,9 +266,13 @@ const ask = async (user, question, previous = null, asked = []) => {
    * say "you have no data" costs money to produce a sentence we already know.
    */
   if (!context?.hasAnything) {
+    const answer =
+      "I can't see any expenses or ledger entries for your account yet. Add a few — or open a group on this device — and ask me again.";
+
+    record(userId, trimmed, answer, false);
+
     return {
-      answer:
-        "I can't see any expenses or ledger entries for your account yet. Add a few — or open a group on this device — and ask me again.",
+      answer,
       usedContext: false,
       quota: { used: quota.used, limit: quota.limit, paidWithPoints, pointCost: tier.cost },
     };
@@ -236,10 +299,50 @@ const ask = async (user, question, previous = null, asked = []) => {
         ]
       : [];
 
+  /**
+   * `people` first, labelled, and written as sentences rather than JSON.
+   *
+   * Two separate problems were making per-person questions fail. The totals did
+   * not exist, so the model was being asked for a figure it was also forbidden
+   * to calculate — that is fixed in financeContext. And the context was one
+   * dense JSON blob, in which an 8B model demonstrably loses rows: asked about
+   * Pankaj it reported no such person, then listed Pankaj among the names it
+   * knew when asked about someone else.
+   *
+   * One line per person fixes the second. It costs a few more tokens than
+   * minified JSON and buys reliability on the most common question there is.
+   * The other sections stay JSON — they are read as structure, not scanned for a
+   * name.
+   */
+  const peopleLines = (context.people ?? []).length
+    ? context.people
+        .map((p) =>
+          [
+            `- ${p.name}`,
+            p.inGroups?.length ? ` (shares the group ${p.inGroups.join(" and ")})` : "",
+            `: you have paid them ${p.youHavePaidThemInTotal} in total`,
+            `; they have paid you ${p.theyHavePaidYouInTotal}`,
+            `; you lent them ${p.youLentThem}`,
+            `; you borrowed ${p.youBorrowedFromThem} from them`,
+            `; they still owe you ${p.stillOwedToYou}`,
+            `; you still owe them ${p.youStillOweThem}.`,
+          ].join("")
+        )
+        .join("\n")
+    : "(no named people on record)";
+
   const userMessage = [
     `Today is ${context.today}.`,
-    `Here is ${context.person}'s financial data as JSON:`,
-    JSON.stringify({ ledger: context.ledger, groups: context.groups }),
+    `Here is ${context.person}'s financial data.`,
+    "",
+    "PEOPLE — every person on record, with totals already calculated across both the ledger and group settlements. This list is complete: if a name is not here, there is no record of them.",
+    peopleLines,
+    "",
+    "LEDGER — their private record of what they spent alone and money lent or borrowed:",
+    JSON.stringify(context.ledger),
+    "",
+    "GROUPS — shared expenses split with other people:",
+    JSON.stringify(context.groups),
     "",
     ...previousTurn,
     `Question: ${trimmed}`,
@@ -251,6 +354,8 @@ const ask = async (user, question, previous = null, asked = []) => {
       user: userMessage,
       maxTokens: 400,
     });
+
+    record(userId, trimmed, answer, true);
 
     return {
       answer,
@@ -321,4 +426,4 @@ const starters = async (userId) => {
   return { suggestions: suggestFollowUps(context, [], 4) };
 };
 
-module.exports = { ask, status, starters, SYSTEM_PROMPT };
+module.exports = { ask, status, starters, history, clearHistory, SYSTEM_PROMPT };

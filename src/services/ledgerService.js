@@ -4,6 +4,9 @@ const groupRepository = require("../repositories/groupRepository");
 const Member = require("../models/member");
 const LedgerEntry = require("../models/ledgerEntry");
 const pointsService = require("./pointsService");
+// Leaf modules: Redis and nothing else, so no cycle back through here.
+const contextCache = require("./ai/contextCache");
+const cacheService = require("./cacheService");
 const { toMinor, assertMinor, formatMinor } = require("../utils/money");
 const { buildPage, decodeCursor } = require("../utils/cursor");
 const { NotFoundError, BadRequestError, ConflictError } = require("../errors");
@@ -98,7 +101,7 @@ const getOrCreate = async (userId) => {
 const startOfMonth = (date = new Date()) =>
   new Date(date.getFullYear(), date.getMonth(), 1);
 
-const getSummary = async (userId) => {
+const getSummaryFresh = async (userId) => {
   const ledger = await getOrCreate(userId);
 
   const [totals, categories] = await Promise.all([
@@ -175,7 +178,7 @@ const normalizeForType = (type, dto) => {
  * stranger. `userId` is never returned — the client needs to know that a claim
  * *can* be delivered, not who to.
  */
-const listContacts = async (userId) => {
+const listContactsFresh = async (userId) => {
   const mine = await memberRepository.findAllByUserId(userId);
   if (mine.length === 0) return { groups: [] };
 
@@ -217,6 +220,20 @@ const listContacts = async (userId) => {
       .sort((a, b) => a.groupName.localeCompare(b.groupName)),
   };
 };
+
+/**
+ * Cached: it fans out across every group this account is in and then every
+ * member of those groups, to fill a dropdown that opens on every entry form.
+ *
+ * Bumped by this account's own writes. A *new member joining a shared group*
+ * bumps that group's version, not this account's — so a brand-new name can take
+ * up to the TTL to appear in the picker. Recorded rather than solved: the
+ * alternative is fanning an invalidation out to every member of the group on
+ * every join, and a name arriving a few minutes late in a dropdown is a much
+ * smaller cost than that.
+ */
+const listContacts = (userId) =>
+  cacheService.rememberUser(userId, "contacts", () => listContactsFresh(userId));
 
 /**
  * Turn a chosen member into a deliverable claim.
@@ -297,6 +314,10 @@ const createEntry = async (userId, dto) => {
   });
 
   await ledgerRepository.touchActivity(ledger._id);
+  // Everything derived from this account — the summary, the contacts list and
+  // the assistant's snapshot — is now out of date.
+  cacheService.bumpUser(userId);
+  contextCache.invalidate(userId);
 
   /**
    * Points, best effort and not awaited — the entry is saved either way.
@@ -448,6 +469,10 @@ const updateEntry = async (userId, entryId, dto) => {
 
   await entry.save();
   await ledgerRepository.touchActivity(ledger._id);
+  // Everything derived from this account — the summary, the contacts list and
+  // the assistant's snapshot — is now out of date.
+  cacheService.bumpUser(userId);
+  contextCache.invalidate(userId);
   return toEntryDTO(entry);
 };
 
@@ -457,6 +482,10 @@ const deleteEntry = async (userId, entryId) => {
   if (!removed) throw new NotFoundError("Entry not found", ERROR_CODES.LEDGER_ENTRY_NOT_FOUND);
 
   await ledgerRepository.touchActivity(ledger._id);
+  // Everything derived from this account — the summary, the contacts list and
+  // the assistant's snapshot — is now out of date.
+  cacheService.bumpUser(userId);
+  contextCache.invalidate(userId);
   return { id: String(removed._id), deleted: true };
 };
 
@@ -503,6 +532,10 @@ const addRepayment = async (userId, entryId, dto) => {
 
   await entry.save();
   await ledgerRepository.touchActivity(ledger._id);
+  // Everything derived from this account — the summary, the contacts list and
+  // the assistant's snapshot — is now out of date.
+  cacheService.bumpUser(userId);
+  contextCache.invalidate(userId);
 
   /**
    * Points only when the debt actually closes, not for every part payment.
@@ -536,8 +569,22 @@ const removeRepayment = async (userId, entryId, repaymentId) => {
 
   await entry.save();
   await ledgerRepository.touchActivity(ledger._id);
+  // Everything derived from this account — the summary, the contacts list and
+  // the assistant's snapshot — is now out of date.
+  cacheService.bumpUser(userId);
+  contextCache.invalidate(userId);
   return toEntryDTO(entry);
 };
+
+/**
+ * The header figures, read through this account's version-keyed cache.
+ *
+ * Two aggregations over every entry, run on every ledger page load and again by
+ * the assistant. Any write from this account bumps the version, so a hit is only
+ * possible while nothing has changed.
+ */
+const getSummary = (userId) =>
+  cacheService.rememberUser(userId, "summary", () => getSummaryFresh(userId));
 
 /** The mirror of a LENT claim, and vice versa. */
 const OPPOSITE = {
@@ -642,6 +689,10 @@ const respondToClaim = async (userId, entryId, accept) => {
   await claimEntry.save();
 
   await ledgerRepository.touchActivity(ledger._id);
+  // Everything derived from this account — the summary, the contacts list and
+  // the assistant's snapshot — is now out of date.
+  cacheService.bumpUser(userId);
+  contextCache.invalidate(userId);
 
   return { accepted: true, entry: toEntryDTO(counterpart) };
 };

@@ -25,6 +25,20 @@ exports.getStarters = asyncHandler(async (req, res) =>
   ok(res, await assistantService.starters(req.user._id))
 );
 
+/**
+ * The saved transcript, so reopening the drawer does not start from nothing.
+ *
+ * Scoped to `req.user._id` like everything else here — there is no path from a
+ * request to another account's conversation.
+ */
+exports.getHistory = asyncHandler(async (req, res) =>
+  ok(res, await assistantService.history(req.user._id))
+);
+
+exports.clearHistory = asyncHandler(async (req, res) =>
+  ok(res, await assistantService.clearHistory(req.user._id), "Conversation cleared")
+);
+
 exports.ask = asyncHandler(async (req, res) =>
   ok(
     res,

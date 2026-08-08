@@ -26,6 +26,13 @@ router.get("/status", aiController.getStatus);
 
 router.get("/suggestions", aiController.getStarters);
 
+/**
+ * The conversation itself. A plain read and a delete — no quota and no provider
+ * call, because neither costs anything to serve.
+ */
+router.get("/history", aiController.getHistory);
+router.delete("/history", writeLimiter, aiController.clearHistory);
+
 router.post(
   "/ask",
   writeLimiter,

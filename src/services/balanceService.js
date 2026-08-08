@@ -1,6 +1,8 @@
 const expenseRepository = require("../repositories/expenseRepository");
 const settlementRepository = require("../repositories/settlementRepository");
 const memberRepository = require("../repositories/memberRepository");
+// Leaf module — Redis only, so no cycle back through the services.
+const cacheService = require("./cacheService");
 const logger = require("../utils/logger");
 
 /**
@@ -26,7 +28,13 @@ const toTotalsMap = (rows = []) =>
 const toCountsMap = (rows = []) =>
   new Map(rows.map((row) => [String(row._id), row.count || 0]));
 
-const computeBalances = async (groupId) => {
+/**
+ * The uncached computation. Everything below the cache calls this.
+ *
+ * Kept separate and exported so any caller that must not read a cached copy —
+ * a migration, a consistency check, an assertion — has a way to bypass it.
+ */
+const computeBalancesFresh = async (groupId) => {
   const [members, expenseAgg, settlementAgg] = await Promise.all([
     memberRepository.findByGroup(groupId, { includeInactive: true }),
     expenseRepository.aggregateTotals(groupId),
@@ -93,6 +101,27 @@ const computeBalances = async (groupId) => {
 };
 
 /**
+ * Balances, read through the group's version-keyed cache.
+ *
+ * This is the hottest read in the app — the summary, the settlement optimiser,
+ * the per-person view and the AI snapshot all start here, so one group screen
+ * recomputes it several times over.
+ *
+ * Caching it does not contradict "balances are derived, never cached"
+ * (docs/05-ALGORITHMS.md §3). That rule forbids a *stored* balance that can
+ * drift from the rows beneath it. Here the key carries the group's version, and
+ * every write bumps it — so a cache hit is only ever possible while nothing has
+ * changed, and the first write makes every stored copy unreachable. What is
+ * served is a freshly-derived balance that happened to be derived a moment ago,
+ * never one that survived an edit.
+ *
+ * The zero-sum assertion still runs on the computed result, so a cached copy is
+ * one that already passed it.
+ */
+const computeBalances = (groupId) =>
+  cacheService.rememberGroup(groupId, "balances", () => computeBalancesFresh(groupId));
+
+/**
  * Σ net must be exactly zero — every expense and every settlement contributes a
  * zero-sum pair, and the split calculator guarantees each expense distributes
  * exactly. A violation means a data-integrity bug, and it is better to know.
@@ -115,4 +144,9 @@ const getMemberBalance = (balanceResult, memberId) => {
   return balanceResult.balances.find((balance) => balance.memberId === String(memberId)) || null;
 };
 
-module.exports = { computeBalances, getMemberBalance, assertZeroSum };
+module.exports = {
+  computeBalances,
+  computeBalancesFresh,
+  getMemberBalance,
+  assertZeroSum,
+};

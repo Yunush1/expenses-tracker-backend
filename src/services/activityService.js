@@ -1,6 +1,9 @@
 const activityRepository = require("../repositories/activityRepository");
 const pushService = require("./pushService");
 const pointsService = require("./pointsService");
+// Leaf modules — Redis only, so requiring them here introduces no cycle.
+const contextCache = require("./ai/contextCache");
+const cacheService = require("./cacheService");
 const { toActivityDTO } = require("../serializers");
 const { buildPage } = require("../utils/cursor");
 const { LIMITS } = require("../constants");
@@ -49,6 +52,34 @@ const record = async ({ groupId, type, actor = null, message, metadata = {} }, s
       pushService
         .notifyActivity(activity, actor)
         .catch((err) => logger.error(`[activityService] Push dispatch failed: ${err.message}`));
+
+      /**
+       * The actor's assistant snapshot is now stale.
+       *
+       * Every domain event in the app passes through here, which makes this the
+       * one place that catches "I just added an expense, now ask Ria about it"
+       * without each service having to remember. Only the actor is invalidated —
+       * finding every other member with an account would be a query per event
+       * for a staleness the short TTL already bounds (see ai/contextCache.js).
+       *
+       * Not awaited, and skipped inside a transaction, on exactly the same terms
+       * as the push above.
+       */
+      if (actor?.userId) contextCache.invalidate(actor.userId);
+
+      /**
+       * Everything cached for this group — balances, summary, members,
+       * settlement suggestions — is now stale.
+       *
+       * This is the single funnel every domain event passes through, which is
+       * what makes the cache safe: no service has to remember to invalidate, and
+       * a new write path gets it for free by recording an activity. One INCR
+       * makes every stale key unreachable regardless of how many views were
+       * cached (services/cacheService.js).
+       *
+       * Not awaited — a cache that fails to clear must never fail the write.
+       */
+      cacheService.bumpGroup(groupId);
 
       /**
        * Reward points, on the same terms as the push: not awaited, never able to

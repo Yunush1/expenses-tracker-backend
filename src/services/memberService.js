@@ -5,6 +5,7 @@ const settlementRepository = require("../repositories/settlementRepository");
 const activityService = require("./activityService");
 // No cycle: the mirror service reaches for models and the ledger, never back here.
 const ledgerMirrorService = require("./ledgerMirrorService");
+const cacheService = require("./cacheService");
 const logger = require("../utils/logger");
 const { withTransaction } = require("../config/db");
 const { toMemberDTO } = require("../serializers");
@@ -21,10 +22,20 @@ const devicesOf = (member) => {
   return [...ids];
 };
 
-const listMembers = async (group, currentMember) => {
-  const members = await memberRepository.findByGroup(group._id);
-  return members.map((member) => toMemberDTO(member, currentMember?._id));
-};
+/**
+ * Cached per viewer, not just per group: `toMemberDTO` sets `isYou`, so one
+ * cached copy served to everybody would tell each member they are the last
+ * person who asked.
+ */
+const listMembers = async (group, currentMember) =>
+  cacheService.rememberGroup(
+    group._id,
+    `members:${currentMember?._id || "anon"}`,
+    async () => {
+      const members = await memberRepository.findByGroup(group._id);
+      return members.map((member) => toMemberDTO(member, currentMember?._id));
+    }
+  );
 
 /**
  * Joining is idempotent per device: a double-tap or a refresh mid-request must
