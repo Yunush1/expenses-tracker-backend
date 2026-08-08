@@ -29,6 +29,12 @@ const createEntrySchema = z.object({
   amount,
   description: trimmedString(LIMITS.LEDGER_DESC_MAX, "Description"),
   counterpartyName,
+  /**
+   * Who the counterparty is, when they were picked from a shared group rather
+   * than typed (docs/17-MEMBER-IDENTITY.md §7). The service still checks that
+   * the member is in a group the caller belongs to — this only checks shape.
+   */
+  counterpartyMemberId: objectId.optional(),
   category,
   occurredAt: pastish,
   /** A due date is the *only* thing that opts an entry into a reminder, so unlike

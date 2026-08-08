@@ -1,10 +1,15 @@
 const ledgerRepository = require("../repositories/ledgerRepository");
+const memberRepository = require("../repositories/memberRepository");
+const groupRepository = require("../repositories/groupRepository");
+const Member = require("../models/member");
+const LedgerEntry = require("../models/ledgerEntry");
 const pointsService = require("./pointsService");
 const { toMinor, assertMinor, formatMinor } = require("../utils/money");
 const { buildPage, decodeCursor } = require("../utils/cursor");
 const { NotFoundError, BadRequestError, ConflictError } = require("../errors");
 const {
   LEDGER_ENTRY_TYPES,
+  LEDGER_CLAIM_STATUS,
   ERROR_CODES,
   LIMITS,
   DEFAULT_CURRENCY,
@@ -54,6 +59,13 @@ const toEntryDTO = (entry) => ({
    */
   source: entry.source || "MANUAL",
   fromGroup: entry.sourceGroupName || null,
+  counterpartyMemberId: entry.counterpartyMemberId ? String(entry.counterpartyMemberId) : null,
+  /**
+   * What the other side did with it — null when no claim was ever made, which is
+   * every entry naming someone who has no account. Never `toUserId`: the owner
+   * has no business learning another person's account id from their own ledger.
+   */
+  claimStatus: entry.claim?.status || null,
   groupId: entry.sourceGroupId ? String(entry.sourceGroupId) : null,
   repayments: (entry.repayments || []).map((r) => ({
     id: String(r._id),
@@ -142,12 +154,100 @@ const listEntries = async (
  */
 const normalizeForType = (type, dto) => {
   if (type === LEDGER_ENTRY_TYPES.SPEND) {
-    return { counterpartyName: "", dueAt: null };
+    return { counterpartyName: "", dueAt: null, counterpartyMemberId: null };
   }
   return {
     counterpartyName: dto.counterpartyName?.trim() || "",
     dueAt: dto.dueAt || null,
   };
+};
+
+/**
+ * Everyone this account could name as a counterparty (docs/17-MEMBER-IDENTITY.md §7).
+ *
+ * The set is "members of groups I am in", which is only answerable now that
+ * `member.userId` is populated — before linking existed, group membership was
+ * knowable from a device and the ledger was knowable from an account, and
+ * nothing joined the two.
+ *
+ * Scoping it to shared groups is the whole safety property: a picker over every
+ * member on the platform would let anyone address a financial claim at a
+ * stranger. `userId` is never returned — the client needs to know that a claim
+ * *can* be delivered, not who to.
+ */
+const listContacts = async (userId) => {
+  const mine = await memberRepository.findAllByUserId(userId);
+  if (mine.length === 0) return { groups: [] };
+
+  const myMemberIds = new Set(mine.map((member) => String(member._id)));
+  const groupIds = [...new Set(mine.map((member) => String(member.groupId)))];
+
+  const [groups, members] = await Promise.all([
+    groupRepository.findByIds(groupIds),
+    memberRepository.findActiveInGroups(groupIds),
+  ]);
+
+  const groupById = new Map(groups.map((group) => [String(group._id), group]));
+  const byGroup = new Map();
+
+  for (const member of members) {
+    // Not yourself: a loan to yourself is not a thing, and seeing your own name
+    // in the list reads as a bug.
+    if (myMemberIds.has(String(member._id))) continue;
+
+    const key = String(member.groupId);
+    if (!byGroup.has(key)) byGroup.set(key, []);
+    byGroup.get(key).push({
+      id: String(member._id),
+      name: member.name,
+      // Whether accepting is even possible for them. Shown as "will be notified"
+      // rather than as anything about their account.
+      reachable: Boolean(member.userId),
+    });
+  }
+
+  return {
+    groups: [...byGroup.entries()]
+      .map(([groupId, list]) => ({
+        groupId,
+        groupName: groupById.get(groupId)?.name || "Group",
+        members: list.sort((a, b) => a.name.localeCompare(b.name)),
+      }))
+      .filter((group) => group.members.length > 0)
+      .sort((a, b) => a.groupName.localeCompare(b.groupName)),
+  };
+};
+
+/**
+ * Turn a chosen member into a deliverable claim.
+ *
+ * Refuses a member from a group the owner is not in — the picker already scopes
+ * this, but the picker is a client and the server does not take a client's word
+ * for who it is allowed to address.
+ *
+ * A member with no linked account is still a perfectly good counterparty: the
+ * entry records who it is about, and if they link later the reference is already
+ * correct. It simply has no claim attached, because there is nobody to deliver
+ * it to yet.
+ */
+const resolveCounterparty = async (userId, memberId) => {
+  const mine = await memberRepository.findAllByUserId(userId);
+  const myGroupIds = new Set(mine.map((member) => String(member.groupId)));
+
+  const member = await Member.findById(memberId).select("_id groupId name userId").lean();
+
+  if (!member || !myGroupIds.has(String(member.groupId))) {
+    throw new BadRequestError(
+      "You can only choose someone from a group you're in.",
+      ERROR_CODES.VALIDATION_ERROR
+    );
+  }
+
+  if (mine.some((row) => String(row._id) === String(member._id))) {
+    throw new BadRequestError("That's you.", ERROR_CODES.VALIDATION_ERROR);
+  }
+
+  return member;
 };
 
 const createEntry = async (userId, dto) => {
@@ -156,6 +256,28 @@ const createEntry = async (userId, dto) => {
 
   const amountMinor = toMinor(dto.amount, ledger.currency);
   assertMinor(amountMinor, "Amount");
+
+  /**
+   * A chosen member becomes a reference, and — when they have an account — a
+   * pending claim (docs/17-MEMBER-IDENTITY.md §7).
+   *
+   * The name is copied from the member rather than trusted from the client, so
+   * the row says who was actually chosen. It is then frozen: renaming a member
+   * later must not silently rewrite what a past loan said.
+   */
+  let counterparty = null;
+  if (dto.counterpartyMemberId && type !== LEDGER_ENTRY_TYPES.SPEND) {
+    counterparty = await resolveCounterparty(userId, dto.counterpartyMemberId);
+  }
+
+  const claim = counterparty?.userId
+    ? {
+        status: LEDGER_CLAIM_STATUS.PENDING,
+        toUserId: counterparty.userId,
+        respondedAt: null,
+        counterpartEntryId: null,
+      }
+    : undefined;
 
   const entry = await ledgerRepository.createEntry({
     ledgerId: ledger._id,
@@ -168,6 +290,10 @@ const createEntry = async (userId, dto) => {
     notes: dto.notes || "",
     version: 0,
     ...normalizeForType(type, dto),
+    ...(counterparty
+      ? { counterpartyMemberId: counterparty._id, counterpartyName: counterparty.name }
+      : {}),
+    ...(claim ? { claim } : {}),
   });
 
   await ledgerRepository.touchActivity(ledger._id);
@@ -413,10 +539,120 @@ const removeRepayment = async (userId, entryId, repaymentId) => {
   return toEntryDTO(entry);
 };
 
+/** The mirror of a LENT claim, and vice versa. */
+const OPPOSITE = {
+  [LEDGER_ENTRY_TYPES.LENT]: LEDGER_ENTRY_TYPES.BORROWED,
+  [LEDGER_ENTRY_TYPES.BORROWED]: LEDGER_ENTRY_TYPES.LENT,
+};
+
+/** Claims addressed to this account and not yet answered. */
+const listIncomingClaims = async (userId) => {
+  const entries = await LedgerEntry.find({
+    "claim.toUserId": userId,
+    "claim.status": LEDGER_CLAIM_STATUS.PENDING,
+    isDeleted: { $ne: true },
+  })
+    .sort({ occurredAt: -1 })
+    .limit(50)
+    .lean();
+
+  // Who is asserting it. Read from the member row the claimant chose *from* —
+  // their own name in the shared group — because an email address would expose
+  // more about them than the group already does.
+  const claimantIds = entries.map((entry) => entry.counterpartyMemberId).filter(Boolean);
+  const claimantMembers = await Member.find({ _id: { $in: claimantIds } })
+    .select("_id groupId")
+    .lean();
+  const groupIdByMember = new Map(
+    claimantMembers.map((member) => [String(member._id), String(member.groupId)])
+  );
+
+  const groups = await groupRepository.findByIds([...new Set(groupIdByMember.values())]);
+  const groupNameById = new Map(groups.map((group) => [String(group._id), group.name]));
+
+  return {
+    claims: entries.map((entry) => ({
+      id: String(entry._id),
+      // Flipped: their LENT is the recipient's BORROWED.
+      type: OPPOSITE[entry.type] || entry.type,
+      amountMinor: entry.amountMinor,
+      currencyCode: entry.currencyCode,
+      description: entry.description,
+      occurredAt: entry.occurredAt,
+      dueAt: entry.dueAt,
+      fromGroup: groupNameById.get(groupIdByMember.get(String(entry.counterpartyMemberId))) || null,
+    })),
+  };
+};
+
+/**
+ * Answer a claim (docs/17-MEMBER-IDENTITY.md §7).
+ *
+ * Accepting writes the counterpart entry into the recipient's own ledger and
+ * links the two. Declining records the refusal and writes nothing — the
+ * claimant's row stays exactly as it was, because a disagreement about money is
+ * a real state and deleting one side of it would be the app taking a position.
+ *
+ * The status guard is in the query, so two taps on Accept cannot create two
+ * counterpart entries.
+ */
+const respondToClaim = async (userId, entryId, accept) => {
+  const claimEntry = await LedgerEntry.findOneAndUpdate(
+    {
+      _id: entryId,
+      "claim.toUserId": userId,
+      "claim.status": LEDGER_CLAIM_STATUS.PENDING,
+      isDeleted: { $ne: true },
+    },
+    {
+      $set: {
+        "claim.status": accept ? LEDGER_CLAIM_STATUS.ACCEPTED : LEDGER_CLAIM_STATUS.DECLINED,
+        "claim.respondedAt": new Date(),
+      },
+    },
+    { new: true }
+  );
+
+  if (!claimEntry) {
+    throw new NotFoundError(
+      "That request is no longer waiting for an answer.",
+      ERROR_CODES.LEDGER_ENTRY_NOT_FOUND
+    );
+  }
+
+  if (!accept) return { accepted: false, entry: null };
+
+  const ledger = await getOrCreate(userId);
+
+  const counterpart = await ledgerRepository.createEntry({
+    ledgerId: ledger._id,
+    type: OPPOSITE[claimEntry.type] || LEDGER_ENTRY_TYPES.BORROWED,
+    amountMinor: claimEntry.amountMinor,
+    currencyCode: claimEntry.currencyCode,
+    description: claimEntry.description,
+    counterpartyName: claimEntry.counterpartyName || "",
+    category: claimEntry.category || "",
+    occurredAt: claimEntry.occurredAt,
+    dueAt: claimEntry.dueAt || null,
+    notes: "",
+    version: 0,
+  });
+
+  claimEntry.claim.counterpartEntryId = counterpart._id;
+  await claimEntry.save();
+
+  await ledgerRepository.touchActivity(ledger._id);
+
+  return { accepted: true, entry: toEntryDTO(counterpart) };
+};
+
 module.exports = {
   getOrCreate,
   getSummary,
   listEntries,
+  listContacts,
+  listIncomingClaims,
+  respondToClaim,
   createEntry,
   updateEntry,
   deleteEntry,

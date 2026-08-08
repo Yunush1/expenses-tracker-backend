@@ -75,6 +75,20 @@ const LEDGER_ENTRY_TYPES = Object.freeze({
   BORROWED: "BORROWED",
 });
 
+/**
+ * The life of a claim one person's ledger makes against another's.
+ *
+ * `DECLINED` is terminal and deliberately does **not** delete the claimant's own
+ * entry: "you owe me" and "no I don't" is a real disagreement, and a ledger that
+ * resolves it by deleting one side is lying to somebody
+ * (docs/17-MEMBER-IDENTITY.md §7).
+ */
+const LEDGER_CLAIM_STATUS = Object.freeze({
+  PENDING: "PENDING",
+  ACCEPTED: "ACCEPTED",
+  DECLINED: "DECLINED",
+});
+
 /** Small and fixed. A free-text category field becomes forty spellings of "food". */
 /**
  * Categories a spend can carry.
@@ -353,6 +367,7 @@ const DEFAULT_CURRENCY = "INR";
 module.exports = {
   GROUP_STATUS,
   LEDGER_ENTRY_TYPES,
+  LEDGER_CLAIM_STATUS,
   LEDGER_CATEGORIES,
   POINT_EVENT_TYPES,
   POINT_RULES,

@@ -75,6 +75,17 @@ memberSchema.index({ groupId: 1, deviceIds: 1 });
 // run everywhere.
 memberSchema.index({ groupId: 1, deviceId: 1 });
 memberSchema.index({ groupId: 1, "linkCode.hash": 1 });
+/**
+ * "Which groups does this account belong to?" — the question the ledger's member
+ * picker is built on (docs/17-MEMBER-IDENTITY.md §7).
+ *
+ * Partial, because `userId` is null on every member who has never linked, which
+ * is most of them: groups work with no account and always will.
+ */
+memberSchema.index(
+  { userId: 1, isActive: 1 },
+  { partialFilterExpression: { userId: { $type: "objectId" } } }
+);
 
 // Member names are intentionally NOT unique — two people called "Rahul" is a real
 // scenario, and rejecting it would be worse than showing both.

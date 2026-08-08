@@ -12,6 +12,12 @@ const findByInviteCode = (inviteCode) => Group.findOne({ inviteCode });
 
 const findById = (id) => Group.findById(id);
 
+/** Names for a set of groups, in one round trip. Read-only — hence `.lean()`. */
+const findByIds = (ids) =>
+  Group.find({ _id: { $in: ids } })
+    .select("_id name currency")
+    .lean();
+
 const existsByInviteCode = (inviteCode) => Group.exists({ inviteCode });
 
 /** Deleted groups are excluded — a retired code should read as simply unknown. */
@@ -41,6 +47,7 @@ module.exports = {
   create,
   findByInviteCode,
   findById,
+  findByIds,
   existsByInviteCode,
   findByJoinCode,
   existsByJoinCode,

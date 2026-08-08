@@ -66,6 +66,15 @@ const findById = (groupId, memberId) => Member.findOne({ _id: memberId, groupId 
 const findByUserId = (groupId, userId) =>
   Member.findOne({ groupId, userId, isActive: true }).lean();
 
+/** Every member row this account holds, across all groups. */
+const findAllByUserId = (userId) => Member.find({ userId, isActive: true }).lean();
+
+/** Everyone in these groups — the candidate counterparties for a ledger entry. */
+const findActiveInGroups = (groupIds) =>
+  Member.find({ groupId: { $in: groupIds }, isActive: true })
+    .select("_id groupId name userId")
+    .lean();
+
 /**
  * Bind, but only over an empty link.
  *
@@ -107,6 +116,8 @@ module.exports = {
   setLinkCode,
   findById,
   findByUserId,
+  findAllByUserId,
+  findActiveInGroups,
   linkUser,
   unlinkUser,
   findActiveByIds,

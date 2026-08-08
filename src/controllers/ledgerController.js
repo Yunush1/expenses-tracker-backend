@@ -16,6 +16,23 @@ exports.getSummary = asyncHandler(async (req, res) =>
   ok(res, await ledgerService.getSummary(req.user._id))
 );
 
+/** People this account can name on a loan — members of groups it belongs to. */
+exports.listContacts = asyncHandler(async (req, res) =>
+  ok(res, await ledgerService.listContacts(req.user._id))
+);
+
+exports.listClaims = asyncHandler(async (req, res) =>
+  ok(res, await ledgerService.listIncomingClaims(req.user._id))
+);
+
+exports.acceptClaim = asyncHandler(async (req, res) =>
+  ok(res, await ledgerService.respondToClaim(req.user._id, req.params.id, true), "Added to your ledger")
+);
+
+exports.declineClaim = asyncHandler(async (req, res) =>
+  ok(res, await ledgerService.respondToClaim(req.user._id, req.params.id, false), "Declined")
+);
+
 exports.listEntries = asyncHandler(async (req, res) =>
   ok(res, await ledgerService.listEntries(req.user._id, req.validatedQuery))
 );

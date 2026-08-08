@@ -1,5 +1,11 @@
 const mongoose = require("mongoose");
-const { LEDGER_ENTRY_TYPES, LEDGER_CATEGORIES, LIMITS, DEFAULT_CURRENCY } = require("../constants");
+const {
+  LEDGER_ENTRY_TYPES,
+  LEDGER_CLAIM_STATUS,
+  LEDGER_CATEGORIES,
+  LIMITS,
+  DEFAULT_CURRENCY,
+} = require("../constants");
 
 /**
  * A repayment against a loan.
@@ -75,12 +81,63 @@ const ledgerEntrySchema = new mongoose.Schema(
       trim: true,
       maxlength: LIMITS.LEDGER_DESC_MAX,
     },
-    /** Free text, and deliberately not a member reference — see above. */
+    /**
+     * Always present, and always what gets rendered.
+     *
+     * Kept even when `counterpartyMemberId` is set, because most counterparties
+     * are not members of anything — "I lent my cousin ₹500" has a name and no
+     * member row — and because a name that was true when the loan was made
+     * should not silently change if that member is later renamed.
+     */
     counterpartyName: {
       type: String,
       default: "",
       trim: true,
       maxlength: LIMITS.LEDGER_COUNTERPARTY_MAX,
+    },
+    /**
+     * Who the counterparty actually is, when they are a member of a group the
+     * owner shares (docs/17-MEMBER-IDENTITY.md §7).
+     *
+     * This is what makes a claim deliverable: member → `userId` → their ledger.
+     * Names cannot do it — two people called Rahul are a real scenario the group
+     * model explicitly permits — and a device cannot do it either.
+     */
+    counterpartyMemberId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Member",
+      default: null,
+    },
+    /**
+     * The claim this entry makes against another account, if any.
+     *
+     * ## Why a claim is not a debt
+     *
+     * A LENT row is the lender's *assertion*. Writing the matching BORROWED row
+     * into someone else's ledger on that say-so alone would let anybody insert
+     * arbitrary debts into a stranger's private records — a spam vector, and a
+     * ledger the owner did not write is one they cannot trust. So the counterpart
+     * is created only on ACCEPT, and DECLINED leaves both sides standing: the two
+     * of them disagreeing is a real state, and the app represents it rather than
+     * picking a winner.
+     *
+     * `toUserId` is resolved once, at creation. Re-resolving on read would let a
+     * claim silently change who it is addressed to if the member is relinked.
+     */
+    claim: {
+      status: {
+        type: String,
+        enum: [...Object.values(LEDGER_CLAIM_STATUS), null],
+        default: null,
+      },
+      toUserId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      respondedAt: { type: Date, default: null },
+      /** The entry created in the other person's ledger when they accepted. */
+      counterpartEntryId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "LedgerEntry",
+        default: null,
+      },
     },
     category: {
       type: String,
@@ -186,6 +243,17 @@ ledgerEntrySchema.index({ ledgerId: 1, isDeleted: 1, occurredAt: -1, _id: -1 });
 ledgerEntrySchema.index({ ledgerId: 1, type: 1, settledAt: 1, isDeleted: 1 });
 /** The reminder sweep — must find due entries without scanning every ledger. */
 ledgerEntrySchema.index({ dueAt: 1, settledAt: 1, isDeleted: 1 });
+/**
+ * The claims inbox: "what has someone asserted against me?"
+ *
+ * Partial, because a claim is the rare case — the overwhelming majority of rows
+ * are ordinary entries with `claim.toUserId` null, and indexing those would be
+ * paying for the whole collection to answer a question about a sliver of it.
+ */
+ledgerEntrySchema.index(
+  { "claim.toUserId": 1, "claim.status": 1 },
+  { partialFilterExpression: { "claim.toUserId": { $type: "objectId" } } }
+);
 /**
  * One mirror per expense, per ledger — enforced by the database rather than by a
  * check-then-write in the service.

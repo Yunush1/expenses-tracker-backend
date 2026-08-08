@@ -31,6 +31,28 @@ router.use(requireAuth);
 
 router.get("/", ledgerController.getSummary);
 
+/**
+ * Declared before "/entries/:id" so neither is shadowed by the other.
+ *
+ * Contacts are members of groups this account belongs to — the picker that
+ * replaces typing a name (docs/17-MEMBER-IDENTITY.md §7).
+ */
+router.get("/contacts", ledgerController.listContacts);
+
+router.get("/claims", ledgerController.listClaims);
+router.post(
+  "/claims/:id/accept",
+  writeLimiter,
+  validate(entryParams, "params"),
+  ledgerController.acceptClaim
+);
+router.post(
+  "/claims/:id/decline",
+  writeLimiter,
+  validate(entryParams, "params"),
+  ledgerController.declineClaim
+);
+
 router.get("/entries", validate(listEntriesQuery, "query"), ledgerController.listEntries);
 
 router.post("/entries", writeLimiter, validate(createEntrySchema), ledgerController.createEntry);
