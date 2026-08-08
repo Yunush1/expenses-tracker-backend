@@ -54,6 +54,7 @@ const ACTIVITY_TYPES = Object.freeze({
   JOIN_APPROVED: "JOIN_APPROVED",
   JOIN_DECLINED: "JOIN_DECLINED",
   DEVICE_LINKED: "DEVICE_LINKED",
+  ACCOUNT_LINKED: "ACCOUNT_LINKED",
   EXPENSE_ADDED: "EXPENSE_ADDED",
   EXPENSE_UPDATED: "EXPENSE_UPDATED",
   EXPENSE_DELETED: "EXPENSE_DELETED",
@@ -328,6 +329,18 @@ const ERROR_CODES = Object.freeze({
   NOT_A_DEBT: "NOT_A_DEBT",
   MEMBER_LIMIT_REACHED: "MEMBER_LIMIT_REACHED",
   ALREADY_CLAIMED: "ALREADY_CLAIMED",
+  /**
+   * This member already belongs to a different account. Never overwritten —
+   * silently re-pointing it is an account-takeover primitive once a ledger
+   * resolves debts through the link (docs/17-MEMBER-IDENTITY.md §10).
+   */
+  MEMBER_ALREADY_LINKED: "MEMBER_ALREADY_LINKED",
+  /**
+   * This account already holds a *different* member in this group. Two members
+   * for one person in one group is either a merge case or a mistake, and the two
+   * need telling apart by a human (docs/17-MEMBER-IDENTITY.md §13).
+   */
+  ACCOUNT_ALREADY_IN_GROUP: "ACCOUNT_ALREADY_IN_GROUP",
   VERSION_CONFLICT: "VERSION_CONFLICT",
   DUPLICATE: "DUPLICATE",
   RATE_LIMITED: "RATE_LIMITED",

@@ -56,6 +56,34 @@ const setLinkCode = (groupId, memberId, hash, expiresAt) =>
 
 const findById = (groupId, memberId) => Member.findOne({ _id: memberId, groupId });
 
+/**
+ * The member this account already holds in this group, if any.
+ *
+ * Used to refuse a second link rather than to resolve identity — one account
+ * holding two members in one group is a merge case, not a lookup
+ * (docs/17-MEMBER-IDENTITY.md §13).
+ */
+const findByUserId = (groupId, userId) =>
+  Member.findOne({ groupId, userId, isActive: true }).lean();
+
+/**
+ * Bind, but only over an empty link.
+ *
+ * `userId: null` in the filter is the guard, not a formality: it makes the write
+ * conditional inside the database, so two requests racing to claim the same
+ * member cannot both read "unlinked" and both succeed. The loser gets null back
+ * and the service turns that into MEMBER_ALREADY_LINKED.
+ */
+const linkUser = (groupId, memberId, userId) =>
+  Member.findOneAndUpdate(
+    { _id: memberId, groupId, userId: null },
+    { $set: { userId } },
+    { new: true }
+  );
+
+const unlinkUser = (groupId, memberId, userId) =>
+  Member.findOneAndUpdate({ _id: memberId, groupId, userId }, { $set: { userId: null } }, { new: true });
+
 const findActiveByIds = (groupId, memberIds) =>
   Member.find({ groupId, _id: { $in: memberIds }, isActive: true }).lean();
 
@@ -78,6 +106,9 @@ module.exports = {
   findByLinkCodeHash,
   setLinkCode,
   findById,
+  findByUserId,
+  linkUser,
+  unlinkUser,
   findActiveByIds,
   updateById,
   deactivate,

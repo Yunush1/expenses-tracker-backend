@@ -3,6 +3,9 @@ const memberRepository = require("../repositories/memberRepository");
 const expenseRepository = require("../repositories/expenseRepository");
 const settlementRepository = require("../repositories/settlementRepository");
 const activityService = require("./activityService");
+// No cycle: the mirror service reaches for models and the ledger, never back here.
+const ledgerMirrorService = require("./ledgerMirrorService");
+const logger = require("../utils/logger");
 const { withTransaction } = require("../config/db");
 const { toMemberDTO } = require("../serializers");
 const { generateLinkCode, hashLinkCode, normalizeLinkCode } = require("../utils/linkCode");
@@ -172,7 +175,7 @@ const createDeviceLinkCode = async ({ group, actor }) => {
  * Deliberately not behind `requireMember`: the whole point is that this browser is
  * not yet anybody in this group.
  */
-const linkDevice = async ({ group, deviceId, code }) => {
+const linkDevice = async ({ group, deviceId, code, userId = null }) => {
   if (!deviceId) {
     throw new BadRequestError("This browser has no device id", ERROR_CODES.VALIDATION_ERROR);
   }
@@ -247,7 +250,184 @@ const linkDevice = async ({ group, deviceId, code }) => {
     metadata: { memberId: String(updated._id), deviceCount: devicesOf(updated).length },
   });
 
-  return { member: toMemberDTO(updated, updated._id), mergeSuggestion };
+  /**
+   * One code, both links (docs/17-MEMBER-IDENTITY.md §6.2).
+   *
+   * Someone setting up a new phone signs in and types the code once; making them
+   * repeat the whole flow to attach the account would be a second ceremony for
+   * the same intent. This route takes `optionalAuth`, so `userId` is present
+   * only when the browser is genuinely signed in.
+   *
+   * Failure here must not fail the device link — that part already succeeded and
+   * is what they came for. The outcome is reported instead, because a client
+   * that assumed both worked would tell someone their account is linked when a
+   * refusal (§10) says otherwise.
+   */
+  let accountLinked = false;
+  let accountLinkError = null;
+
+  if (userId) {
+    try {
+      const result = await linkAccount({ group, member: updated, userId });
+      accountLinked = true;
+      if (result.alreadyLinked) accountLinkError = null;
+    } catch (error) {
+      accountLinkError = error.isOperational ? error.message : "Could not link your account.";
+      logger.warn(`[identity] Device linked but account link refused: ${error.message}`);
+    }
+  }
+
+  return {
+    member: toMemberDTO(updated, updated._id),
+    mergeSuggestion,
+    accountLinked,
+    accountLinkError,
+  };
+};
+
+/**
+ * Bind a member to an account, and pull their past group expenses into its
+ * ledger (docs/17-MEMBER-IDENTITY.md §6).
+ *
+ * This is the one place `member.userId` is written. Every path in §6 funnels
+ * through it so the refusals below cannot be bypassed by adding a route.
+ *
+ * ## The two refusals
+ *
+ * **A member already linked to someone else** is never re-pointed. The draft
+ * this design replaces did exactly that, unconditionally — and once a ledger
+ * resolves debts through the link, silently re-pointing it moves somebody's
+ * money. The guard is in the query (`userId: null`), so two requests racing to
+ * claim the same member cannot both win.
+ *
+ * **An account already holding a different member in this group** is refused
+ * too. One person with two members in one group is either two identities that
+ * want merging or a mistake, and the app already has a merge flow that a human
+ * drives. Picking one automatically would silently orphan the other's history.
+ *
+ * Re-linking to the *same* account succeeds quietly: it is the natural result of
+ * tapping the offer twice, and an error there would be theatre.
+ */
+const linkAccount = async ({ group, member, userId }) => {
+  if (!userId) {
+    throw new BadRequestError("Sign in first", ERROR_CODES.UNAUTHENTICATED);
+  }
+
+  if (member.userId && String(member.userId) === String(userId)) {
+    return { member: toMemberDTO(member, member._id), alreadyLinked: true, backfill: null };
+  }
+
+  if (member.userId) {
+    throw new ConflictError(
+      `${member.name} is already linked to another account. Sign in as that account, or unlink it there first.`,
+      ERROR_CODES.MEMBER_ALREADY_LINKED
+    );
+  }
+
+  const existing = await memberRepository.findByUserId(group._id, userId);
+  if (existing && String(existing._id) !== String(member._id)) {
+    throw new ConflictError(
+      `Your account is already "${existing.name}" in this group. If both are you, merge them first — then link the one that remains.`,
+      ERROR_CODES.ACCOUNT_ALREADY_IN_GROUP
+    );
+  }
+
+  const updated = await memberRepository.linkUser(group._id, member._id, userId);
+
+  // Lost the race: something bound this member between the read and the write.
+  if (!updated) {
+    throw new ConflictError(
+      `${member.name} was just linked to another account.`,
+      ERROR_CODES.MEMBER_ALREADY_LINKED
+    );
+  }
+
+  await activityService.record({
+    groupId: group._id,
+    type: ACTIVITY_TYPES.ACCOUNT_LINKED,
+    actor: updated,
+    message: `${updated.name} linked an account`,
+    metadata: { memberId: String(updated._id) },
+  });
+
+  /**
+   * The backfill is the reason anyone does this: the expenses added before
+   * signing in are exactly the ones missing from the ledger.
+   *
+   * Not awaited. It is bounded and usually small, but it is still a write per
+   * expense, and the person is waiting on a button — the same reasoning that
+   * keeps push dispatch off `activityService.record`'s caller. The ledger is
+   * invalidated on the client after this returns, so the rows appear on the next
+   * read either way.
+   */
+  ledgerMirrorService
+    .backfillForMember(updated, userId)
+    .then((result) => {
+      if (result.written > 0) {
+        logger.info(
+          `[identity] Backfilled ${result.written} expense(s) into the ledger for ${updated.name}`
+        );
+      }
+    })
+    .catch((err) => logger.warn(`[identity] Backfill after linking failed: ${err.message}`));
+
+  return { member: toMemberDTO(updated, updated._id), alreadyLinked: false };
+};
+
+/**
+ * Release the link, from the account that holds it.
+ *
+ * Scoped to that account by the query, so holding the invite link is not enough
+ * to detach someone else's account from their member. Mirrored ledger rows are
+ * deliberately left alone: they are the person's own record of their own
+ * spending, and deleting financial history as a side effect of unlinking is not
+ * a decision this function gets to make.
+ */
+const unlinkAccount = async ({ group, member, userId }) => {
+  const updated = await memberRepository.unlinkUser(group._id, member._id, userId);
+
+  if (!updated) {
+    throw new ForbiddenError(
+      "That member is not linked to your account.",
+      ERROR_CODES.MEMBER_ALREADY_LINKED
+    );
+  }
+
+  return { member: toMemberDTO(updated, updated._id) };
+};
+
+/**
+ * Whether to offer the link, for the member this browser already is (§6.1).
+ *
+ * Deliberately an offer and not an action: the server can see that this browser
+ * is Rahul and that someone is signed in, but "this browser is Rahul" is exactly
+ * the inference `resolveOwner` refuses to make on its own — a shared laptop
+ * makes it wrong. The confirmation is what supplies the missing fact, and only
+ * the person at the keyboard has it.
+ */
+const accountLinkStatus = async ({ group, actor, userId }) => {
+  if (!actor) return { linkable: false, reason: "NOT_A_MEMBER" };
+  if (!userId) return { linkable: false, reason: "SIGNED_OUT" };
+
+  if (actor.userId) {
+    return {
+      linkable: false,
+      reason: String(actor.userId) === String(userId) ? "LINKED_TO_YOU" : "LINKED_ELSEWHERE",
+      memberName: actor.name,
+    };
+  }
+
+  const existing = await memberRepository.findByUserId(group._id, userId);
+  if (existing) {
+    return {
+      linkable: false,
+      reason: "ACCOUNT_ALREADY_IN_GROUP",
+      memberName: actor.name,
+      heldName: existing.name,
+    };
+  }
+
+  return { linkable: true, reason: "OFFER", memberId: String(actor._id), memberName: actor.name };
 };
 
 /** Manual add — someone who is not at the table yet, e.g. "Dad". */
@@ -507,6 +687,9 @@ module.exports = {
   claimMember,
   createDeviceLinkCode,
   linkDevice,
+  linkAccount,
+  unlinkAccount,
+  accountLinkStatus,
   mergeMembers,
   addMember,
   renameMember,

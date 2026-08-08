@@ -70,9 +70,46 @@ exports.linkDevice = asyncHandler(async (req, res) => {
     group: req.group,
     deviceId: req.deviceId,
     code: req.body.code,
+    // Present only when this browser is signed in — the route takes optionalAuth,
+    // so an anonymous redemption still links the device and nothing more.
+    userId: req.user?._id || null,
   });
 
-  return ok(res, payload, "Device linked");
+  return ok(
+    res,
+    payload,
+    payload.accountLinked ? "Device and account linked" : "Device linked"
+  );
+});
+
+exports.accountLinkStatus = asyncHandler(async (req, res) => {
+  const payload = await memberService.accountLinkStatus({
+    group: req.group,
+    actor: req.member,
+    userId: req.user?._id || null,
+  });
+
+  return ok(res, payload);
+});
+
+exports.linkAccount = asyncHandler(async (req, res) => {
+  const payload = await memberService.linkAccount({
+    group: req.group,
+    member: req.member,
+    userId: req.user._id,
+  });
+
+  return ok(res, payload, "Account linked");
+});
+
+exports.unlinkAccount = asyncHandler(async (req, res) => {
+  const payload = await memberService.unlinkAccount({
+    group: req.group,
+    member: req.member,
+    userId: req.user._id,
+  });
+
+  return ok(res, payload, "Account unlinked");
 });
 
 exports.mergeMembers = asyncHandler(async (req, res) => {

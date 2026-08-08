@@ -194,10 +194,28 @@ ledgerEntrySchema.index({ dueAt: 1, settledAt: 1, isDeleted: 1 });
  * so "did we already mirror this?" is a question two requests can ask at the same
  * time and both answer no. The index makes the loser of that race an error to
  * swallow instead of a duplicate row in someone's private ledger.
+ *
+ * ## Partial, not sparse — and this was a real bug
+ *
+ * `sparse: true` does not do what it reads like on a **compound** index. Mongo
+ * skips a document only when it is missing *every* indexed field; a manually
+ * typed entry has a `ledgerId` and no `sourceExpenseId`, so it is indexed with
+ * `sourceExpenseId: null` and collides with every other manual entry in the same
+ * ledger. The build therefore fails with E11000 on `{ ledgerId, null }` the
+ * moment a user has two hand-written rows — which means **this index has never
+ * existed in a database that has any**, and the uniqueness the comment above
+ * promises has never actually been enforced.
+ *
+ * The partial filter indexes only rows that carry a real expense id, which is
+ * exactly the set the guarantee is about. Manual entries are excluded outright
+ * instead of colliding on a shared null.
  */
 ledgerEntrySchema.index(
   { ledgerId: 1, sourceExpenseId: 1 },
-  { unique: true, sparse: true }
+  {
+    unique: true,
+    partialFilterExpression: { sourceExpenseId: { $type: "objectId" } },
+  }
 );
 
 /**

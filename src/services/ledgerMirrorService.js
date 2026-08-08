@@ -378,6 +378,88 @@ const backfillForUser = async (user, { since = null, dryRun = false, allowShared
   return result;
 };
 
+/**
+ * One member's past expenses into one account's ledger, on linking.
+ *
+ * ## Why this is allowed to run on a request when `backfillForUser` is not
+ *
+ * The note above `backfillForUser` argues against a sign-in hook, and that
+ * argument still stands — every word of it is about a backfill that fires *as a
+ * side effect of logging in*, over an unbounded set of groups, with nothing
+ * asked and nothing shown. This is a different thing on all three counts:
+ *
+ *  - **Asked for.** It runs only when someone confirms "yes, that member is me"
+ *    (docs/17-MEMBER-IDENTITY.md §6). Signing in alone still does nothing.
+ *  - **Bounded.** One member, in one group, capped at `MAX` rows. Not "every
+ *    group any browser of mine has ever touched".
+ *  - **Unambiguous.** `member.userId` was set by the person themselves, so there
+ *    is no device heuristic to get wrong — which is the entire reason
+ *    `backfillForUser` needs `allowShared` and this does not.
+ *
+ * It is still kept off the response path by its caller, because the linking
+ * request should not wait on it.
+ *
+ * Idempotent, by the unique index on `{ ledgerId, sourceExpenseId }` — relinking
+ * the same member writes nothing the second time.
+ */
+const MAX_BACKFILL_ROWS = 500;
+
+const backfillForMember = async (member, userId) => {
+  const result = { examined: 0, written: 0, skipped: 0, capped: false };
+
+  if (!isEnabled()) return result;
+
+  const group = await Group.findById(member.groupId).select("_id name currency").lean();
+  if (!group) return result;
+
+  const expenses = await Expense.find({
+    groupId: member.groupId,
+    createdByMemberId: member._id,
+    isDeleted: { $ne: true },
+  })
+    .sort({ expenseDate: -1 })
+    // One over the cap, so a full page can be told from an exactly-full one.
+    .limit(MAX_BACKFILL_ROWS + 1)
+    .lean();
+
+  if (expenses.length > MAX_BACKFILL_ROWS) {
+    result.capped = true;
+    expenses.length = MAX_BACKFILL_ROWS;
+  }
+  if (expenses.length === 0) return result;
+
+  const ledger = await ledgerService.getOrCreate(userId);
+  const existing = await LedgerEntry.find({
+    ledgerId: ledger._id,
+    sourceExpenseId: { $in: expenses.map((expense) => expense._id) },
+  })
+    .select("sourceExpenseId")
+    .lean();
+  const alreadyMirrored = new Set(existing.map((row) => String(row.sourceExpenseId)));
+
+  for (const expense of expenses) {
+    result.examined += 1;
+
+    // Already there, or they paid for others and consumed nothing themselves.
+    if (alreadyMirrored.has(String(expense._id)) || shareOf(expense, member._id) <= 0) {
+      result.skipped += 1;
+      continue;
+    }
+
+    // eslint-disable-next-line no-await-in-loop -- ordered, and bounded by MAX
+    const written = await writeMirror({
+      ledgerId: ledger._id,
+      group,
+      expense,
+      memberId: member._id,
+    });
+    if (written) result.written += 1;
+    else result.skipped += 1;
+  }
+
+  return result;
+};
+
 /** Every account that has ever signed in on a browser. */
 const backfillAll = async ({ since = null, dryRun = false, allowShared = false } = {}) => {
   const users = await User.find({ "deviceIds.0": { $exists: true } })
@@ -463,6 +545,7 @@ module.exports = {
   removeMirror,
   recategoriseMirrors,
   backfillForUser,
+  backfillForMember,
   backfillAll,
   removeAmbiguousMirrors,
   resolveOwner,

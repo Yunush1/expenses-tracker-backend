@@ -52,6 +52,15 @@ const toMemberDTO = (member, currentMemberId = null) => {
     // themselves — those are the credential.
     deviceCount,
     isYou: currentMemberId != null && id(member._id) === id(currentMemberId),
+    /**
+     * Whether this member is bound to an account — never *which* account.
+     *
+     * A boolean is what the UI needs ("linked ✓", or offer to link). The user id
+     * would be a stable cross-group identifier handed to everyone holding the
+     * invite link, which is a capability URL — so it stays on the server
+     * (docs/17-MEMBER-IDENTITY.md §10).
+     */
+    hasAccount: Boolean(member.userId),
     joinedAt: member.joinedAt,
   };
 };
