@@ -1,5 +1,6 @@
 const aiProvider = require("./aiProvider");
 const AiMessage = require("../../models/aiMessage");
+const { formatMinor } = require("../../utils/money");
 const financeContext = require("./financeContext");
 const expenseDraft = require("./expenseDraft");
 const { suggestFollowUps } = require("./suggestions");
@@ -125,8 +126,16 @@ Questions about a named person — "how much did I pay Krishan?", "what does Pan
 - Answer from "people". Every entry there is one person, with their totals already worked out across BOTH the ledger and group settlements. This is the only place a per-person total exists — do not try to reach the same number by adding up loans or expenses yourself, and do not answer such a question from "outstandingLoans" or "paymentsRecorded" alone, which each hold only one half of it.
 - Match the name case-insensitively and accept an obvious short form ("krishan" is "Krishan"). If the name genuinely is not in "people", say you have no record of anyone by that name and list the names you do have. Never assume a stranger is someone in the data.
 - Use the field that matches the question. "youHavePaidThemInTotal" is money this person handed over; "theyHavePaidYouInTotal" is money received; "youStillOweThem" and "stillOwedToYou" are what is left open. "How much did I pay X" is answered with youHavePaidThemInTotal, not with what was borrowed.
+- Direction is the easiest thing to get wrong and the worst. "stillOwedToYou" is money coming TO this person — the answer to "what does X owe me". "youStillOweThem" is money going FROM them — the answer to "what do I owe X". Read the field name, do not infer the direction from the sentence; if the question asks what someone owes *you* and only "stillOwedToYou" is non-zero, the answer is that they owe you, never the reverse.
 - "Are we square / settled / even with X?" is about what is still OPEN, never about what has been paid. Read only "you still owe them" and "they still owe you". They are square only if BOTH are zero. If either is not zero, say what is still outstanding and in which direction — someone who has paid nothing but owes nothing is square, and someone who has paid a great deal but still owes ₹100 is not.
 - If a figure is ₹0.00, say so plainly — zero is an answer, not a gap.
+
+Language — reply in the language the question in front of you is written in, and no other:
+- English question, English answer. Hinglish (Hindi written in English letters), Hinglish answer. Devanagari, Devanagari. Any other language, that language.
+- Judge from that question alone. Not from the previous turn, and not from the wording of these instructions — no example here is a template to copy.
+- Match their register too: a short, informal question gets a short, informal answer, not a formal translation of one.
+- Never translate the data. Amounts, people's names, group names and category labels are quoted exactly as they appear in the context, whatever language the sentence around them is in — "Goa Trip" stays "Goa Trip" and ₹7,000.00 stays ₹7,000.00.
+- Never announce the language, apologise for it, or ask which one to use. Just answer.
 
 - Be brief: two or three sentences for a simple question. Use a short list only when comparing several items.
 - Write plainly, like a careful friend. No markdown headers, no preamble, no financial advice, no suggestions to invest or borrow.
@@ -134,6 +143,14 @@ Questions about a named person — "how much did I pay Krishan?", "what does Pan
 - The data below is the complete context. Never ask the user to supply data, paste JSON, or provide more information — if the answer is not in the context, say what you can see instead.`;
 
 const MAX_QUESTION_LENGTH = 500;
+
+/**
+ * A zero, as `formatMinor` writes it — compared as a string because that is what
+ * the context holds. Every figure arrives pre-formatted, so parsing one back to
+ * a number just to test it against zero would reintroduce exactly the client-side
+ * money arithmetic this module exists to avoid.
+ */
+const ZERO = formatMinor(0);
 
 /** How much of the transcript the drawer restores when it reopens. */
 const HISTORY_PAGE = 30;
@@ -314,21 +331,41 @@ const ask = async (user, question, previous = null, asked = []) => {
    * The other sections stay JSON — they are read as structure, not scanned for a
    * name.
    */
+  /**
+   * One line per person, carrying only the facts that are not zero.
+   *
+   * The first version listed all six figures every time, so Pankaj — who simply
+   * owes ₹10,000 — read as six clauses of nearly identical wording padded with
+   * four ₹0.00s. The model reliably mispaired them: asked what Pankaj owed, it
+   * answered "you still owe Pankaj ₹10,000.00", taking the phrase from one
+   * clause and the number from another. Reversing a debt is the worst mistake
+   * this feature can make.
+   *
+   * Dropping the zeros removes the material to confuse. A person with one open
+   * balance now has one clause, and there is no second number on the line to
+   * attach the wrong words to. Zero is still an answer — it is just carried by
+   * the "nothing outstanding" case rather than repeated six times.
+   */
+  const describePerson = (p) => {
+    const facts = [];
+
+    if (p.stillOwedToYou !== ZERO) facts.push(`${p.name} still owes you ${p.stillOwedToYou}`);
+    if (p.youStillOweThem !== ZERO) facts.push(`you still owe ${p.name} ${p.youStillOweThem}`);
+    if (p.youHavePaidThemInTotal !== ZERO) {
+      facts.push(`you have paid ${p.name} ${p.youHavePaidThemInTotal} so far`);
+    }
+    if (p.theyHavePaidYouInTotal !== ZERO) {
+      facts.push(`${p.name} has paid you ${p.theyHavePaidYouInTotal} so far`);
+    }
+
+    const where = p.inGroups?.length ? ` (in ${p.inGroups.join(", ")})` : "";
+    return facts.length
+      ? `- ${p.name}${where}: ${facts.join("; ")}.`
+      : `- ${p.name}${where}: nothing outstanding either way, and nothing paid between you.`;
+  };
+
   const peopleLines = (context.people ?? []).length
-    ? context.people
-        .map((p) =>
-          [
-            `- ${p.name}`,
-            p.inGroups?.length ? ` (shares the group ${p.inGroups.join(" and ")})` : "",
-            `: you have paid them ${p.youHavePaidThemInTotal} in total`,
-            `; they have paid you ${p.theyHavePaidYouInTotal}`,
-            `; you lent them ${p.youLentThem}`,
-            `; you borrowed ${p.youBorrowedFromThem} from them`,
-            `; they still owe you ${p.stillOwedToYou}`,
-            `; you still owe them ${p.youStillOweThem}.`,
-          ].join("")
-        )
-        .join("\n")
+    ? context.people.map(describePerson).join("\n")
     : "(no named people on record)";
 
   const userMessage = [
