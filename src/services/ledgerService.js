@@ -181,7 +181,35 @@ const normalizeForType = (type, dto) => {
  * *can* be delivered, not who to.
  */
 const listContactsFresh = async (userId) => {
-  const mine = await memberRepository.findAllByUserId(userId);
+  /**
+   * Which memberships are "mine" — by confirmed link, and by browser.
+   *
+   * The linked route (`member.userId`) is the accurate one, but it only exists
+   * once someone has tapped "Is this you?" inside a group. Relying on it alone
+   * made the picker empty for everybody who has not, which meant the "From a
+   * group" tab never appeared and the feature looked missing rather than
+   * unconfigured — for exactly the people it is most useful to.
+   *
+   * So the browsers this account has signed in on are used as a fallback, the
+   * same resolution `financeContext.groupsForUser` uses. It is read-only and
+   * writes no `userId` onto a membership: this decides whose *names to offer in
+   * a dropdown*, never who anyone is (docs/17-MEMBER-IDENTITY.md §9).
+   *
+   * The known imprecision, stated: on a shared browser this offers the other
+   * person's groups too. That leaks no more than the browser already has — it is
+   * a member of those groups and shows them in full on the same device — but it
+   * is a guess, and the linked route is what removes the guessing.
+   */
+  const user = await User.findById(userId).select("deviceIds").lean();
+  const deviceIds = (user?.deviceIds || []).filter(Boolean);
+
+  const mine = await Member.find({
+    isActive: true,
+    $or: [{ userId }, ...(deviceIds.length ? [{ deviceIds: { $in: deviceIds } }] : [])],
+  })
+    .select("_id groupId name userId")
+    .lean();
+
   if (mine.length === 0) return { groups: [] };
 
   const myMemberIds = new Set(mine.map((member) => String(member._id)));
