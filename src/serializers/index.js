@@ -61,6 +61,22 @@ const toMemberDTO = (member, currentMemberId = null) => {
      * (docs/17-MEMBER-IDENTITY.md §10).
      */
     hasAccount: Boolean(member.userId),
+    /**
+     * This member's public address, shown to the whole group.
+     *
+     * Visible to everyone in the group on purpose: the point of a code is that
+     * the people who know you can name you on a loan without relying on a
+     * display name, and inside a group they already know exactly who is who.
+     *
+     * The exposure that comes with it, stated plainly: the invite link is a
+     * capability URL (docs/02-HLD.md §3.4), so anyone holding it can now read
+     * every member's code as well as their name. What that buys an attacker is
+     * the ability to *address* a claim at those people — which they still have
+     * to accept, and which is capped per sender by ledgerService. It buys no
+     * read access and no identity: a member code is never proof of who anyone is
+     * (docs/18-USER-CODE.md).
+     */
+    memberCode: member.memberCode || null,
     joinedAt: member.joinedAt,
   };
 };

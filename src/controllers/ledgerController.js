@@ -21,6 +21,15 @@ exports.listContacts = asyncHandler(async (req, res) =>
   ok(res, await ledgerService.listContacts(req.user._id))
 );
 
+/**
+ * Resolve a typed or scanned code to a name, so it can be confirmed before an
+ * amount is committed to it. Answers "not found" rather than erroring — a typo
+ * is the common case (docs/18-USER-CODE.md).
+ */
+exports.lookupCode = asyncHandler(async (req, res) =>
+  ok(res, await ledgerService.lookupByCode(req.user._id, req.query.code))
+);
+
 exports.listClaims = asyncHandler(async (req, res) =>
   ok(res, await ledgerService.listIncomingClaims(req.user._id))
 );

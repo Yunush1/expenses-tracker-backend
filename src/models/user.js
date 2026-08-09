@@ -155,11 +155,44 @@ const userSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+
+    /**
+     * This account's permanent identity code — the thing another person types to
+     * name you on a loan (docs/18-USER-CODE.md).
+     *
+     * ## Why this is not `referralCode`
+     *
+     * They look alike and must not be the same string. A referral code is
+     * marketing: it goes in public links, group chats and social posts, and the
+     * whole point is that it spreads. This one is the handle someone uses to
+     * assert a debt against you, so the two want opposite exposure. Sharing your
+     * referral link should never hand strangers your ledger address.
+     *
+     * ## Why possessing it is safe
+     *
+     * It is an **address, not a credential**. Holding it lets someone send you a
+     * claim, which you then accept or refuse; it never reads your data, never
+     * proves you are you, and never moves money on its own. That is the same
+     * bargain as an email address or a UPI id, and it is what makes immutability
+     * defensible here where it was not for a member-level code
+     * (docs/17-MEMBER-IDENTITY.md §3).
+     *
+     * Allocated once and never rewritten — see authService.ensureUserCode. As
+     * with `referralCode`, note the deliberate absence of `default: null`: a
+     * sparse unique index skips *missing* fields, not null ones, so a written
+     * null would make the second account collide with the first.
+     */
+    userCode: {
+      type: String,
+      uppercase: true,
+      trim: true,
+    },
   },
   { timestamps: true }
 );
 
 userSchema.index({ referralCode: 1 }, { unique: true, sparse: true });
+userSchema.index({ userCode: 1 }, { unique: true, sparse: true });
 userSchema.index({ referredBy: 1 });
 
 module.exports = mongoose.model("User", userSchema);

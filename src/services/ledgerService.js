@@ -2,7 +2,9 @@ const ledgerRepository = require("../repositories/ledgerRepository");
 const memberRepository = require("../repositories/memberRepository");
 const groupRepository = require("../repositories/groupRepository");
 const Member = require("../models/member");
+const User = require("../models/user");
 const LedgerEntry = require("../models/ledgerEntry");
+const { normalizeCode, kindOf } = require("../utils/userCode");
 const pointsService = require("./pointsService");
 // Leaf modules: Redis and nothing else, so no cycle back through here.
 const contextCache = require("./ai/contextCache");
@@ -236,6 +238,138 @@ const listContacts = (userId) =>
   cacheService.rememberUser(userId, "contacts", () => listContactsFresh(userId));
 
 /**
+ * Resolve a typed code to who it addresses (docs/18-USER-CODE.md).
+ *
+ * ## What it answers with, and what it refuses to
+ *
+ * A display name, and — for a member code — the group it belongs to, because
+ * "Rahul (Goa Trip)" is what lets someone confirm they have the right person
+ * before committing money to it.
+ *
+ * It never returns an email, an account id, or the *other* person's codes. The
+ * asymmetry is deliberate: a code is something you hand out so people can name
+ * you, so resolving one must not hand back everything else about you. Anyone can
+ * try any code, so this endpoint's answer is the entire exposure.
+ *
+ * An unknown code is reported as unknown rather than as an error — a typo is the
+ * common case, not an exception.
+ */
+const lookupByCode = async (userId, rawCode) => {
+  const code = normalizeCode(rawCode);
+  if (!code) return { found: false, reason: "MALFORMED" };
+
+  if (kindOf(code) === "user") {
+    const other = await User.findOne({ userCode: code }).select("_id displayName email").lean();
+    if (!other) return { found: false, reason: "UNKNOWN" };
+
+    // Naming yourself is a mistake worth catching before it becomes an entry.
+    if (String(other._id) === String(userId)) return { found: false, reason: "SELF" };
+
+    return {
+      found: true,
+      kind: "user",
+      code,
+      // The email's local part only when there is no display name — enough to
+      // recognise someone you already know, without publishing the address.
+      name: other.displayName || String(other.email || "").split("@")[0] || "Splitly user",
+      reachable: true,
+    };
+  }
+
+  const member = await Member.findOne({ memberCode: code, isActive: true })
+    .select("_id name groupId userId")
+    .lean();
+  if (!member) return { found: false, reason: "UNKNOWN" };
+
+  const mine = await memberRepository.findAllByUserId(userId);
+  if (mine.some((row) => String(row._id) === String(member._id))) {
+    return { found: false, reason: "SELF" };
+  }
+
+  const group = await groupRepository.findByIds([member.groupId]);
+
+  return {
+    found: true,
+    kind: "member",
+    code,
+    name: member.name,
+    groupName: group[0]?.name || null,
+    /**
+     * Whether a claim could actually reach them. An anonymous member is a
+     * perfectly good counterparty — the entry records who it is about — but
+     * there is no account to deliver a request to, so the UI should say so
+     * rather than implying they will be asked.
+     */
+    reachable: Boolean(member.userId),
+  };
+};
+
+/**
+ * A typed code → the counterparty to record, or a refusal.
+ *
+ * Shares `lookupByCode` so the confirmation screen and the save cannot disagree
+ * about who a code points to — the client having already resolved it is not a
+ * reason to trust what it sends back.
+ */
+const resolveByCode = async (userId, rawCode) => {
+  const found = await lookupByCode(userId, rawCode);
+
+  if (!found.found) {
+    const message =
+      found.reason === "SELF"
+        ? "That code is your own."
+        : found.reason === "MALFORMED"
+          ? "That does not look like a Splitly code."
+          : "No one is using that code.";
+    throw new BadRequestError(message, ERROR_CODES.VALIDATION_ERROR);
+  }
+
+  if (found.kind === "user") {
+    const other = await User.findOne({ userCode: found.code }).select("_id").lean();
+    return { code: found.code, name: found.name, userId: other?._id || null, member: null };
+  }
+
+  const member = await Member.findOne({ memberCode: found.code, isActive: true })
+    .select("_id name userId groupId")
+    .lean();
+
+  return { code: found.code, name: found.name, userId: member?.userId || null, member };
+};
+
+/**
+ * How many unanswered claims one account may have standing against another.
+ *
+ * A code is public by design, so anyone holding yours can address requests at
+ * you. Accept-or-decline already stops a debt being imposed, but nothing stopped
+ * a hundred of them arriving — and an inbox flooded by one person is a denial of
+ * the feature even though no money moved.
+ *
+ * A cap per pair, rather than a global rate limit: it costs nothing to the
+ * ordinary case (two or three open loans with one person is already unusual) and
+ * makes the abusive one bounce. Declining or accepting clears the way for more,
+ * so it throttles noise rather than the relationship.
+ */
+const MAX_PENDING_CLAIMS_PER_PAIR = 5;
+
+const assertClaimAllowance = async (fromUserId, toUserId) => {
+  const ledger = await getOrCreate(fromUserId);
+
+  const pending = await LedgerEntry.countDocuments({
+    ledgerId: ledger._id,
+    "claim.toUserId": toUserId,
+    "claim.status": LEDGER_CLAIM_STATUS.PENDING,
+    isDeleted: { $ne: true },
+  });
+
+  if (pending >= MAX_PENDING_CLAIMS_PER_PAIR) {
+    throw new ConflictError(
+      `You already have ${pending} requests waiting for this person to answer. Give them a chance to respond before sending more.`,
+      ERROR_CODES.RATE_LIMITED
+    );
+  }
+};
+
+/**
  * Turn a chosen member into a deliverable claim.
  *
  * Refuses a member from a group the owner is not in — the picker already scopes
@@ -283,14 +417,28 @@ const createEntry = async (userId, dto) => {
    * later must not silently rewrite what a past loan said.
    */
   let counterparty = null;
-  if (dto.counterpartyMemberId && type !== LEDGER_ENTRY_TYPES.SPEND) {
-    counterparty = await resolveCounterparty(userId, dto.counterpartyMemberId);
+  let byCode = null;
+
+  if (type !== LEDGER_ENTRY_TYPES.SPEND) {
+    if (dto.counterpartyMemberId) {
+      counterparty = await resolveCounterparty(userId, dto.counterpartyMemberId);
+    } else if (dto.counterpartyCode) {
+      byCode = await resolveByCode(userId, dto.counterpartyCode);
+      // A member code resolves to a member row, so it joins the same path the
+      // picker uses and the rest of this function needs no second branch.
+      if (byCode.member) counterparty = byCode.member;
+    }
   }
 
-  const claim = counterparty?.userId
+  /** Whoever this is addressed to, however they were named. */
+  const toUserId = counterparty?.userId || byCode?.userId || null;
+
+  if (toUserId) await assertClaimAllowance(userId, toUserId);
+
+  const claim = toUserId
     ? {
         status: LEDGER_CLAIM_STATUS.PENDING,
-        toUserId: counterparty.userId,
+        toUserId,
         respondedAt: null,
         counterpartEntryId: null,
       }
@@ -309,6 +457,13 @@ const createEntry = async (userId, dto) => {
     ...normalizeForType(type, dto),
     ...(counterparty
       ? { counterpartyMemberId: counterparty._id, counterpartyName: counterparty.name }
+      : {}),
+    ...(byCode
+      ? {
+          counterpartyUserId: byCode.userId || null,
+          counterpartyUserCode: byCode.code,
+          counterpartyName: byCode.name,
+        }
       : {}),
     ...(claim ? { claim } : {}),
   });
@@ -702,6 +857,7 @@ module.exports = {
   getSummary,
   listEntries,
   listContacts,
+  lookupByCode,
   listIncomingClaims,
   respondToClaim,
   createEntry,

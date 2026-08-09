@@ -39,6 +39,13 @@ router.get("/", ledgerController.getSummary);
  */
 router.get("/contacts", ledgerController.listContacts);
 
+/**
+ * Code lookup. Behind `writeLimiter` despite being a GET: it is the one endpoint
+ * that answers questions about *other* accounts, so it is the one worth
+ * rate-limiting against someone walking the code space.
+ */
+router.get("/lookup", writeLimiter, ledgerController.lookupCode);
+
 router.get("/claims", ledgerController.listClaims);
 router.post(
   "/claims/:id/accept",

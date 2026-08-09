@@ -35,6 +35,12 @@ const createEntrySchema = z.object({
    * the member is in a group the caller belongs to — this only checks shape.
    */
   counterpartyMemberId: objectId.optional(),
+  /**
+   * The other way to name someone: their public code, when they are not in a
+   * group you share (docs/18-USER-CODE.md). Shape only — the service resolves it
+   * and refuses unknown codes, your own, and anything malformed.
+   */
+  counterpartyCode: z.string().trim().max(32).optional(),
   category,
   occurredAt: pastish,
   /** A due date is the *only* thing that opts an entry into a reminder, so unlike

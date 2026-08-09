@@ -1,7 +1,11 @@
 const User = require("../models/user");
 const PushToken = require("../models/pushToken");
 const { POINT_EVENT_TYPES } = require("../constants");
+const { generateUserCode } = require("../utils/userCode");
 const logger = require("../utils/logger");
+
+/** Draws before giving up on a collision. Generous; collisions are ~never. */
+const MAX_CODE_ATTEMPTS = 5;
 
 /**
  * Turning a verified token into a row in this database.
@@ -48,6 +52,59 @@ const profileDiffers = (user, claims) =>
  * @param context.referralCode  the invite code this browser arrived with, if any
  * @param context.deviceId      the browser making the request
  */
+/**
+ * Allocate this account's permanent identity code, once (docs/18-USER-CODE.md).
+ *
+ * ## Why eagerly, unlike `referralCode`
+ *
+ * The referral code is allocated lazily because most accounts never share an
+ * invite, so most would be paying for an index entry nobody reads. This one is
+ * the opposite: *anyone* can be named as a counterparty on someone else's loan,
+ * so every account needs one to be findable — and a code that appears only after
+ * you visit some screen is not the "static" identity the feature is built on.
+ *
+ * ## Why it can never change
+ *
+ * The write is conditional on the field still being empty, so concurrent
+ * requests from the same account cannot produce two codes, and nothing anywhere
+ * else writes this field. An account's code is therefore allocated exactly once
+ * and is stable for its lifetime — which is what lets a code written into
+ * someone else's ledger entry still resolve years later.
+ */
+const ensureUserCode = async (user) => {
+  if (user?.userCode) return user;
+
+  for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt += 1) {
+    const code = generateUserCode();
+
+    try {
+      const updated = await User.findOneAndUpdate(
+        { _id: user._id, userCode: null },
+        { $set: { userCode: code } },
+        { new: true }
+      );
+
+      // Null means a concurrent request already allocated one — take theirs.
+      if (updated) return updated;
+
+      const current = await User.findById(user._id);
+      if (current?.userCode) return current;
+    } catch (err) {
+      // Duplicate key means a collision with another account — draw again.
+      if (err?.code !== 11000) throw err;
+    }
+  }
+
+  /**
+   * Not fatal. A missing code costs this account the ability to be named by
+   * code until the next sign-in retries it; throwing here would instead fail
+   * the whole authenticated request, which is a far worse trade for a field
+   * nothing on the critical path reads.
+   */
+  logger.warn(`[auth] Could not allocate a user code for ${user._id}`);
+  return user;
+};
+
 const upsertFromClaims = async (claims, context = {}) => {
   const existing = await User.findOne({ firebaseUid: claims.uid });
 
@@ -55,10 +112,16 @@ const upsertFromClaims = async (claims, context = {}) => {
    * The common path: a known user whose profile has not changed and whose
    * `lastSeenAt` is recent enough. Return the row and write nothing — this is
    * every request after the first in an hour, so it is the one worth optimising.
+   *
+   * The code check rides along because it is a field test on a row already in
+   * hand: accounts that predate this feature pick one up on their next request
+   * rather than needing a migration.
    */
   if (existing) {
     const seenRecently = Date.now() - existing.lastSeenAt.getTime() < LAST_SEEN_TTL_MS;
-    if (seenRecently && !profileDiffers(existing, claims)) return existing;
+    if (seenRecently && !profileDiffers(existing, claims)) {
+      return existing.userCode ? existing : ensureUserCode(existing);
+    }
   }
 
   const update = {
@@ -120,7 +183,9 @@ const upsertFromClaims = async (claims, context = {}) => {
       .catch(() => {});
   }
 
-  return user;
+  // Awaited, unlike the bonus: the code is part of the identity this function
+  // returns, and a caller that got a user without one would render a blank.
+  return ensureUserCode(user);
 };
 
 /**
@@ -197,6 +262,15 @@ const toProfileDTO = (user) => ({
    * Who invited whom is nobody else's business, including the invitee's.
    */
   referred: Boolean(user.referredBy),
+  /**
+   * This account's own code, returned to its owner and to nobody else.
+   *
+   * Safe to show here — it is the thing they are meant to hand out — but note
+   * that it never appears in any *other* account's payload. A code is looked up
+   * to name someone, and the lookup answers with a display name, never with the
+   * code of the person found (docs/18-USER-CODE.md).
+   */
+  userCode: user.userCode || null,
 });
 
-module.exports = { upsertFromClaims, linkDevice, toProfileDTO };
+module.exports = { upsertFromClaims, ensureUserCode, linkDevice, toProfileDTO };

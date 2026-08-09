@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const { LIMITS } = require("../constants");
+const { generateMemberCode } = require("../utils/userCode");
 
 const memberSchema = new mongoose.Schema(
   {
@@ -47,6 +48,36 @@ const memberSchema = new mongoose.Schema(
       hash: { type: String, default: null },
       expiresAt: { type: Date, default: null },
     },
+    /**
+     * This member's public address (docs/18-USER-CODE.md).
+     *
+     * ## Why members need one when accounts already have `userCode`
+     *
+     * Most members have no account at all — that is the whole product. An
+     * anonymous member cannot be named by a `userCode` because there is no user,
+     * so without this there is no way to point at "Aman in the Goa group" from
+     * outside that group.
+     *
+     * ## What it is emphatically not
+     *
+     * Not a credential, and not a person. It addresses a **member row**, which
+     * is scoped to one group: someone in three groups has three of these, and
+     * none of them is "them" in the way `user.userCode` is. Use it to name a
+     * counterparty; never to identify a human across groups, and never as proof
+     * of identity — device linking still requires the short-lived `linkCode`
+     * (docs/17-MEMBER-IDENTITY.md §3).
+     *
+     * A `default` rather than assignment in each service, so every route in —
+     * creating a group, joining by link, being added by hand, a claim approval —
+     * produces one without having to remember. The unique index is the backstop
+     * for the astronomically unlikely collision.
+     */
+    memberCode: {
+      type: String,
+      uppercase: true,
+      trim: true,
+      default: generateMemberCode,
+    },
     isCreator: {
       type: Boolean,
       default: false,
@@ -75,6 +106,14 @@ memberSchema.index({ groupId: 1, deviceIds: 1 });
 // run everywhere.
 memberSchema.index({ groupId: 1, deviceId: 1 });
 memberSchema.index({ groupId: 1, "linkCode.hash": 1 });
+/**
+ * Global, not per group: a member code is looked up on its own, by someone who
+ * does not know which group it belongs to — that is the point of it.
+ *
+ * Sparse, so rows created before this field existed do not all collide on a
+ * missing value.
+ */
+memberSchema.index({ memberCode: 1 }, { unique: true, sparse: true });
 /**
  * "Which groups does this account belong to?" — the question the ledger's member
  * picker is built on (docs/17-MEMBER-IDENTITY.md §7).

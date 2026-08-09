@@ -109,6 +109,35 @@ const ledgerEntrySchema = new mongoose.Schema(
       default: null,
     },
     /**
+     * The counterparty as an *account*, when they were named by their user code
+     * rather than picked from a shared group (docs/18-USER-CODE.md).
+     *
+     * The two are alternatives, not a pair: a member reference resolves to an
+     * account through `member.userId`, while this one already is the account.
+     * Both end up populating `claim.toUserId`, which is what the inbox reads —
+     * so the rest of the claim flow does not care which route was taken.
+     */
+    counterpartyUserId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    /**
+     * The code exactly as it resolved, kept for the record.
+     *
+     * Denormalised on purpose, and it is *not* a second source of truth:
+     * `counterpartyUserId` is what anything resolves through. This exists so the
+     * entry can show what was typed — "you addressed this to SPL-7KD9-1XQR" —
+     * which is the only way someone can tell they sent a loan to the wrong
+     * person after the fact.
+     */
+    counterpartyUserCode: {
+      type: String,
+      default: null,
+      uppercase: true,
+      trim: true,
+    },
+    /**
      * The claim this entry makes against another account, if any.
      *
      * ## Why a claim is not a debt
