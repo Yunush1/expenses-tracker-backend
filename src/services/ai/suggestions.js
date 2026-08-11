@@ -67,6 +67,11 @@ const suggestFollowUps = (context, asked = [], limit = 3) => {
       // Only worth asking when there is more than one category to compare.
       if ((ledger.spendByCategoryThisMonth || []).length > 1) {
         candidates.push("Where is most of my money going?");
+        // Only offered once there is a previous month to compare against —
+        // "how do I spend less" answered from a single month is guesswork.
+        if ((ledger.spendingTrend?.categories || []).some((row) => row.lastMonth)) {
+          candidates.push("How can I reduce my spending?");
+        }
       }
     }
   }

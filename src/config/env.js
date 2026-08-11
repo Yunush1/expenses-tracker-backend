@@ -235,7 +235,24 @@ const config = Object.freeze({
     apiKey: (process.env.AI_API_KEY || process.env.HUGGINGFACE_API_TOKEN || "").trim(),
     baseUrl: (process.env.AI_BASE_URL || process.env.HUGGINGFACE_BASE_URL || "https://router.huggingface.co")
       .replace(/\/+$/, ""),
-    model: (process.env.AI_MODEL || process.env.HUGGINGFACE_MODEL || "meta-llama/Llama-3.1-8B-Instruct").trim(),
+    /**
+     * Llama 3.3 70B, not the 8B this started on.
+     *
+     * Measured on this app's real prompt and data, same question, same context:
+     * the 8B answered a Hinglish question with an infinite repetition loop
+     * ("Apne bills ki jaanch ke baad…" five times, nested), answered an English
+     * question in Hinglish, and reported a ₹2,050 *increase* as a decrease. The
+     * 70B got all three right and was an order of magnitude faster on the ones
+     * that mattered (1.7s against 17.4s), because the small model burns its
+     * budget repeating itself.
+     *
+     * The lesson worth keeping: three separate bugs here — reversed debts, lost
+     * rows, garbled Hinglish — were all traced to model capacity, not to the
+     * prompt. Reshaping the context bought accuracy each time, but only up to
+     * this ceiling. Do not drop back to an 8B to save credits without re-running
+     * those cases.
+     */
+    model: (process.env.AI_MODEL || process.env.HUGGINGFACE_MODEL || "meta-llama/Llama-3.3-70B-Instruct").trim(),
     /**
      * Questions per account per day. Small on purpose: generous for a person,
      * useless to a script, and it bounds the bill even if everything else fails.
@@ -255,7 +272,16 @@ const config = Object.freeze({
     newUserQuota: Number(process.env.AI_NEW_USER_QUOTA ?? 10),
     /** How long an account counts as new, for both the quota and the price. */
     newUserDays: Number(process.env.AI_NEW_USER_DAYS ?? 7),
-    timeoutMs: Number(process.env.AI_TIMEOUT_MS ?? 20000),
+    /**
+     * 30s, raised from 20s when spending suggestions landed.
+     *
+     * Those answers are three or four sentences rather than one, and generation
+     * time scales with output — at 20s the longer ones were being aborted
+     * mid-sentence and surfacing as "the assistant is busy", which is a lie: it
+     * was working, just not fast enough. The person is watching a spinner and
+     * would rather wait than retry a question that already cost them quota.
+     */
+    timeoutMs: Number(process.env.AI_TIMEOUT_MS ?? 30000),
   }),
 
   /**

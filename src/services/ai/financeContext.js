@@ -386,17 +386,133 @@ const buildPeople = async (userId, ledgerId, currency, groupRefs) => {
     .sort((a, b) => a.name.localeCompare(b.name));
 };
 
+/**
+ * Where the money went, and which way it is moving — the raw material for
+ * "how do I spend less?".
+ *
+ * ## Why this is computed rather than asked for
+ *
+ * A useful suggestion needs a comparison: not "you spent ₹8,000 on food" but
+ * "₹8,000 this month against ₹5,200 last". That is arithmetic, and the model is
+ * forbidden from doing arithmetic for the reason the whole module exists — a
+ * wrong number delivered fluently is worse than no answer. So the comparison is
+ * done here, in integer minor units, and the model is handed the finished
+ * sentence's worth of facts.
+ *
+ * Without this it can only offer the generic advice anyone could give without
+ * looking at the data ("try cooking at home"), which is worse than saying
+ * nothing: it sounds like insight while demonstrating that nothing was read.
+ *
+ * Both months come from the same collection in one pass, bucketed by date, so
+ * the extra insight costs one aggregation rather than two round trips.
+ */
+const spendingInsights = async (ledgerId, currency) => {
+  const now = new Date();
+  const thisMonthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+
+  const rows = await LedgerEntry.aggregate([
+    {
+      $match: {
+        ledgerId,
+        isDeleted: false,
+        type: LEDGER_ENTRY_TYPES.SPEND,
+        occurredAt: { $gte: lastMonthStart },
+      },
+    },
+    {
+      $group: {
+        _id: {
+          category: "$category",
+          // A boolean bucket rather than a date grouping: only two periods are
+          // ever wanted, and this keeps the shape flat.
+          isThisMonth: { $gte: ["$occurredAt", thisMonthStart] },
+        },
+        totalMinor: { $sum: "$amountMinor" },
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  const byCategory = new Map();
+  for (const row of rows) {
+    const key = row._id.category || "OTHER";
+    if (!byCategory.has(key)) byCategory.set(key, { thisMonth: 0, lastMonth: 0, count: 0 });
+    const bucket = byCategory.get(key);
+    if (row._id.isThisMonth) {
+      bucket.thisMonth += row.totalMinor;
+      bucket.count += row.count;
+    } else {
+      bucket.lastMonth += row.totalMinor;
+    }
+  }
+
+  const categories = [...byCategory.entries()]
+    .map(([category, b]) => ({
+      category,
+      thisMonth: formatMinor(b.thisMonth, currency),
+      lastMonth: formatMinor(b.lastMonth, currency),
+      entries: b.count,
+      /**
+       * The direction, stated in words rather than as a signed number.
+       *
+       * A model handed "+2800" will sometimes render it as a decrease. A model
+       * handed "up" cannot. The amount of the change is spelled out too, so no
+       * subtraction is left for it to attempt.
+       */
+      change:
+        b.lastMonth === 0
+          ? b.thisMonth > 0
+            ? "new this month — nothing last month"
+            : "nothing either month"
+          : b.thisMonth > b.lastMonth
+            ? `up ${formatMinor(b.thisMonth - b.lastMonth, currency)} on last month`
+            : b.thisMonth < b.lastMonth
+              ? `down ${formatMinor(b.lastMonth - b.thisMonth, currency)} on last month`
+              : "the same as last month",
+      _sort: b.thisMonth,
+    }))
+    .sort((a, b) => b._sort - a._sort)
+    .slice(0, 8)
+    .map(({ _sort, ...row }) => row);
+
+  // The individual rows worth looking at, so a suggestion can name something
+  // real rather than a category.
+  const biggest = await LedgerEntry.find({
+    ledgerId,
+    isDeleted: false,
+    type: LEDGER_ENTRY_TYPES.SPEND,
+    occurredAt: { $gte: thisMonthStart },
+  })
+    .sort({ amountMinor: -1 })
+    .limit(5)
+    .select("description amountMinor category occurredAt sourceGroupName")
+    .lean();
+
+  return {
+    categories,
+    biggestThisMonth: biggest.map((e) => ({
+      description: e.description,
+      amount: formatMinor(e.amountMinor, currency),
+      category: e.category || undefined,
+      date: iso(e.occurredAt),
+      fromGroup: e.sourceGroupName || undefined,
+    })),
+  };
+};
+
 /** The personal ledger, if this account has one with anything in it. */
 const describeLedger = async (userId) => {
   const ledger = await Ledger.findOne({ userId }).lean();
   if (!ledger) return null;
 
-  const [entries, summary] = await Promise.all([
+  const [entries, summary, insights] = await Promise.all([
     LedgerEntry.find({ ledgerId: ledger._id, isDeleted: false })
       .sort({ occurredAt: -1, _id: -1 })
       .limit(RECENT_LEDGER_ENTRIES)
       .lean(),
     ledgerService.getSummary(userId),
+    spendingInsights(ledger._id, ledger.currency),
   ]);
 
   if (entries.length === 0) return null;
@@ -406,6 +522,12 @@ const describeLedger = async (userId) => {
 
   return {
     currency,
+    /**
+     * This month against last, per category, plus the largest individual rows.
+     * The only place a trend exists — everything else here is a snapshot, and a
+     * suggestion needs a direction.
+     */
+    spendingTrend: insights,
     totals: {
       owedToYou: formatMinor(summary.totals.owedToMeMinor, currency),
       youOwe: formatMinor(summary.totals.iOweMinor, currency),
