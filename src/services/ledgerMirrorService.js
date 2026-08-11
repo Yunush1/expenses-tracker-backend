@@ -107,6 +107,22 @@ const mirrorExpense = async ({ group, actor, expense }) => {
  * server cannot.
  */
 const resolveOwner = async (member) => {
+  /**
+   * The confirmed link wins, and settles the ambiguity outright.
+   *
+   * `member.userId` is set only when the person themselves confirmed "yes, that
+   * member is me" (docs/17-MEMBER-IDENTITY.md §6). That is a stated fact, not an
+   * inference from which browser was used — so the shared-machine problem below
+   * simply does not apply to it.
+   *
+   * Missing this check is what silently stopped mirroring: a member who *had*
+   * linked their account still fell through to the device heuristic, and because
+   * two accounts had signed in on that browser the heuristic correctly refused
+   * to guess. The result was a linked member whose group expenses stopped
+   * reaching their own ledger — the exact problem linking exists to solve.
+   */
+  if (member?.userId) return member.userId;
+
   const deviceIds = (member?.deviceIds || []).filter(Boolean);
   if (member?.deviceId) deviceIds.push(member.deviceId);
   if (deviceIds.length === 0) return null;
