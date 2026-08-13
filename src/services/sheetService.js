@@ -13,11 +13,10 @@ const {
   ERROR_CODES,
   LIMITS,
   SHEET_ALIGNMENTS,
+  SHEET_COLOUR_PATTERN,
   SHEET_COLUMN_TYPES,
   SHEET_DEFAULT_COLUMNS,
-  SHEET_FILL_COLOURS,
   SHEET_ROLES,
-  SHEET_TEXT_COLOURS,
 } = require("../constants");
 const { BadRequestError, ConflictError, ForbiddenError, NotFoundError } = require("../errors");
 
@@ -90,6 +89,50 @@ const createSheet = async (user, { title, description, columns, currency }) => {
   return sheet;
 };
 
+/**
+ * The top-left corner of a sheet, for the thumbnail on its card.
+ *
+ * ## Why a slice of real cells rather than a rendered image
+ *
+ * An image would mean a headless renderer, a storage bucket, and a staleness
+ * problem — the thumbnail is wrong the moment anybody types, and re-rendering on
+ * every keystroke is absurd. A handful of live cells is always current, costs a
+ * few hundred bytes, and the client can draw it as a miniature grid that looks
+ * like what it links to.
+ *
+ * ## Why per-sheet queries rather than one aggregation
+ *
+ * Grouping rows by sheet and slicing would push every row of every sheet through
+ * memory before discarding all but five — on a twenty-thousand-row sheet that is
+ * the whole thing, to show four. These are indexed limit-5 reads on
+ * `{ sheetId, isDeleted, position }`, run in parallel and capped, so the cost is
+ * bounded by the number of *sheets* and not by how big any of them is.
+ */
+const PREVIEW_ROWS = 4;
+const PREVIEW_COLS = 4;
+const PREVIEW_SHEET_CAP = 40;
+const PREVIEW_CELL_MAX = 24;
+
+const previewFor = async (sheet) => {
+  const columns = (sheet.columns || []).slice(0, PREVIEW_COLS);
+  if (columns.length === 0) return { headers: [], rows: [] };
+
+  const rows = await SheetRow.find({ sheetId: sheet._id, isDeleted: false })
+    .sort({ position: 1 })
+    .limit(PREVIEW_ROWS)
+    .select("cells")
+    .lean();
+
+  return {
+    headers: columns.map((column) => column.name),
+    // Truncated hard: a cell holding a 500-character note would otherwise be
+    // sent in full to render as six clipped pixels on a card.
+    rows: rows.map((row) =>
+      columns.map((column) => String(row.cells?.[column.key] ?? "").slice(0, PREVIEW_CELL_MAX))
+    ),
+  };
+};
+
 const listSheets = async (user) => {
   const entries = await access.listAccessibleSheets(user);
 
@@ -99,9 +142,16 @@ const listSheets = async (user) => {
 
   const pendingCounts = await access.pendingRequestCounts(ownedIds);
 
-  return entries.map((entry) => ({
+  // Beyond the cap the cards are far below the fold anyway, and the query count
+  // is what stops mattering last — better a thumbnail-less card than forty
+  // round trips nobody scrolled to.
+  const previewed = entries.slice(0, PREVIEW_SHEET_CAP);
+  const previews = await Promise.all(previewed.map((entry) => previewFor(entry.sheet)));
+
+  return entries.map((entry, index) => ({
     ...entry,
     pendingRequestCount: pendingCounts.get(id(entry.sheet._id)) || 0,
+    preview: index < previewed.length ? previews[index] : null,
   }));
 };
 
@@ -202,7 +252,12 @@ const findColumn = (sheet, columnKey) => {
   return column;
 };
 
-const addColumn = async (shareCode, user, { name, type, width, options, afterKey }, socketId) => {
+const addColumn = async (
+  shareCode,
+  user,
+  { name, type, width, options, afterKey, beforeKey },
+  socketId
+) => {
   const { sheet } = await access.requireAccess(shareCode, user, SHEET_ROLES.EDITOR);
 
   if (sheet.columns.length >= LIMITS.SHEET_MAX_COLUMNS) {
@@ -214,17 +269,25 @@ const addColumn = async (shareCode, user, { name, type, width, options, afterKey
 
   const [column] = withKeys([{ name, type, width, options }]);
 
-  // Inserted where the user clicked "insert right", appended otherwise. The
-  // array's order *is* the display order — there is no separate index to keep in
-  // step with it, and therefore none to fall out of step.
-  const at = afterKey ? sheet.columns.findIndex((entry) => entry.key === afterKey) : -1;
-  if (at >= 0) sheet.columns.splice(at + 1, 0, column);
+  // Inserted where the user clicked "insert left"/"insert right", appended
+  // otherwise. The array's order *is* the display order — there is no separate
+  // index to keep in step with it, and therefore none to fall out of step.
+  //
+  // A key naming a column that is no longer there falls through to the append,
+  // which is the right answer for a menu opened just before somebody else
+  // deleted that column: the request is odd but not wrong, and refusing it would
+  // lose the user's column to a race they cannot see.
+  const before = beforeKey ? sheet.columns.findIndex((entry) => entry.key === beforeKey) : -1;
+  const after = afterKey ? sheet.columns.findIndex((entry) => entry.key === afterKey) : -1;
+
+  if (before >= 0) sheet.columns.splice(before, 0, column);
+  else if (after >= 0) sheet.columns.splice(after + 1, 0, column);
   else sheet.columns.push(column);
 
   sheet.lastActivityAt = new Date();
+  realtime.sheetChanged(sheet, socketId);
   await sheet.save();
 
-  realtime.sheetChanged(sheet, socketId);
 
   return { sheet, column };
 };
@@ -424,12 +487,16 @@ const formatsOf = (row, sheet) => {
 /**
  * Whitelist a cell's formatting.
  *
- * Every field is checked against a fixed set, and colours against the fixed
- * palettes — because these values become **CSS in other people's browsers**. A
- * free-text colour is an injection surface: `red;background:url(...)` and worse
- * are what an unchecked string in a `style` attribute buys, and the sheet is
- * shared, so the payload would be served to every collaborator. Constraining it
- * to an enum at the boundary makes that impossible rather than merely unlikely.
+ * Every field is checked against a fixed set, and colours against a strict
+ * `#rrggbb` pattern — because these values become **CSS in other people's
+ * browsers**. A free-text colour is an injection surface: `red;background:url(...)`
+ * and worse are what an unchecked string in a `style` attribute buys, and the
+ * sheet is shared, so the payload would be served to every collaborator.
+ * Constraining the value to a shape that cannot express a second declaration
+ * makes that impossible rather than merely unlikely.
+ *
+ * Note this runs on **every** write path, including the realtime one — a colour
+ * that never passed through the toolbar is checked identically.
  *
  * Falsy flags are dropped rather than stored as `false`, so a cell that was bold
  * and is no longer stores nothing at all instead of accumulating a row of
@@ -449,8 +516,14 @@ const sanitiseFormats = (formats, sheet) => {
       if (raw[flag]) format[flag] = true;
     }
 
-    if (SHEET_TEXT_COLOURS.includes(raw.fg)) format.fg = raw.fg;
-    if (SHEET_FILL_COLOURS.includes(raw.bg)) format.bg = raw.bg;
+    // Lowercased on the way in so the same colour picked from a swatch and typed
+    // by hand compares equal downstream.
+    if (typeof raw.fg === "string" && SHEET_COLOUR_PATTERN.test(raw.fg)) {
+      format.fg = raw.fg.toLowerCase();
+    }
+    if (typeof raw.bg === "string" && SHEET_COLOUR_PATTERN.test(raw.bg)) {
+      format.bg = raw.bg.toLowerCase();
+    }
     if (Object.values(SHEET_ALIGNMENTS).includes(raw.align)) format.align = raw.align;
 
     const size = Number(raw.size);

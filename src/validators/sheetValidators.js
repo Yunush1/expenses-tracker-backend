@@ -1,6 +1,7 @@
 const { z } = require("zod");
 const { objectId, trimmedString } = require("./common");
 const {
+  DEFAULT_SHEET_TITLE,
   LIMITS,
   SHEET_ALIGNMENTS,
   SHEET_COLUMN_TYPES,
@@ -56,7 +57,21 @@ const columnInput = z.object({
 /* -------------------------------- Sheets --------------------------------- */
 
 const createSheetSchema = z.object({
-  title: trimmedString(LIMITS.SHEET_TITLE_MAX, "Title"),
+  /**
+   * Optional, and defaulted rather than refused.
+   *
+   * Naming a thing before it exists is the wrong order — nobody knows what to
+   * call an empty grid, so the dialog that insists on it is a speed bump before
+   * the first row is typed. Every spreadsheet app resolves this the same way: it
+   * creates "Untitled spreadsheet" and lets the title be fixed later, by which
+   * point the sheet's contents make the name obvious. `.catch` rather than
+   * `.default` so a title that is present but blank lands on the default too,
+   * instead of failing the length check.
+   */
+  title: trimmedString(LIMITS.SHEET_TITLE_MAX, "Title")
+    .optional()
+    .catch(undefined)
+    .transform((value) => value || DEFAULT_SHEET_TITLE),
   description: z.string().trim().max(LIMITS.SHEET_DESC_MAX).optional(),
   currency: z.string().trim().length(3).toUpperCase().optional(),
   /** Present only on "duplicate this layout"; a new sheet gets the defaults. */
@@ -104,6 +119,13 @@ const sortRowsSchema = z.object({
 const addColumnSchema = columnInput.extend({
   /** Insert to the right of this column; appended when absent. */
   afterKey: z.string().trim().max(32).optional(),
+  /**
+   * Insert to the *left* of this column. Needed because `afterKey` cannot
+   * express the left edge: there is no column before the first one to name, and
+   * an absent `afterKey` means "append" rather than "prepend". Takes precedence
+   * when both are sent.
+   */
+  beforeKey: z.string().trim().max(32).optional(),
 });
 
 const updateColumnSchema = z

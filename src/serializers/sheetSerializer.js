@@ -24,7 +24,10 @@ const toColumnDTO = (column) => ({
  * infer what the caller may do by re-deriving the rules. The server decided; the
  * client renders that decision.
  */
-const toSheetDTO = (sheet, { role = null, source = null, pendingRequestCount = 0 } = {}) => ({
+const toSheetDTO = (
+  sheet,
+  { role = null, source = null, pendingRequestCount = 0, preview = null } = {}
+) => ({
   id: id(sheet._id),
   title: sheet.title,
   description: sheet.description || "",
@@ -53,6 +56,12 @@ const toSheetDTO = (sheet, { role = null, source = null, pendingRequestCount = 0
   isOwner: role === SHEET_ROLES.OWNER,
   /** Only ever non-zero for an owner — nobody else is shown that a queue exists. */
   pendingRequestCount,
+  /**
+   * A few cells from the top-left, for the card thumbnails on the list screen.
+   * Absent (`null`) on the single-sheet route, where the real rows follow
+   * immediately and a preview would be the same bytes twice.
+   */
+  preview,
   createdAt: sheet.createdAt,
   lastActivityAt: sheet.lastActivityAt,
 });

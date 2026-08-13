@@ -72,14 +72,20 @@ const refuses = async (label, fn, code) => {
   const stranger = await mk("stranger", { emailVerified: true });
 
   const created = await sheetService.createSheet(owner, { title: "Q3 expenses" });
-  const sheet = await Sheet.findById(created._id);
+  let sheet = await Sheet.findById(created._id);
   const { shareCode } = sheet;
 
   console.log("--- a new sheet ---");
   check("is private by default", sheet.visibility, SHEET_VISIBILITY.PRIVATE);
   check("starts with the default columns", sheet.columns.length, SHEET_DEFAULT_COLUMNS.length);
   // Unnamed by design — letters, not a guessed schema. See SHEET_DEFAULT_COLUMNS.
-  check("columns are unnamed letters", sheet.columns.map((c) => c.name).join(""), "ABCDEF");
+  // Derived from the constant rather than spelled out, so widening the default
+  // set is a one-line change and not a failing assertion in another file.
+  check(
+    "columns are unnamed letters",
+    sheet.columns.map((c) => c.name).join(""),
+    SHEET_DEFAULT_COLUMNS.map((c) => c.name).join("")
+  );
   check("column keys are generated, not names", /^c[0-9a-f]{8}$/.test(sheet.columns[0].key), true);
   check("starts with three empty rows", await SheetRow.countDocuments({ sheetId: sheet._id }), 3);
 
@@ -277,6 +283,45 @@ const refuses = async (label, fn, code) => {
     "Office chairs"
   );
 
+  console.log("\n--- columns insert where the menu said, including the left edge ---");
+  const firstKey = sheet.columns[0].key;
+  const secondKey = sheet.columns[1].key;
+
+  const { sheet: afterLeft } = await sheetService.addColumn(shareCode, owner, {
+    name: "Prepended",
+    beforeKey: firstKey,
+  });
+  check("insert-left of the first column lands at index 0", afterLeft.columns[0].name, "Prepended");
+  check("and does not displace the old first column", afterLeft.columns[1].key, firstKey);
+
+  const { sheet: afterRight } = await sheetService.addColumn(shareCode, owner, {
+    name: "Inserted",
+    afterKey: firstKey,
+  });
+  const rightAt = afterRight.columns.findIndex((c) => c.name === "Inserted");
+  check("insert-right lands immediately after its anchor", afterRight.columns[rightAt - 1].key, firstKey);
+  check("and immediately before what followed it", afterRight.columns[rightAt + 1].key, secondKey);
+
+  // A menu opened just before someone else deleted that column: append rather
+  // than refuse, so the user does not lose their column to a race they cannot see.
+  const { sheet: afterStale } = await sheetService.addColumn(shareCode, owner, {
+    name: "Orphan",
+    beforeKey: "cdeadbeef",
+  });
+  check(
+    "a key naming a vanished column appends instead of failing",
+    afterStale.columns[afterStale.columns.length - 1].name,
+    "Orphan"
+  );
+
+  // Put the sheet back the way the rest of the script expects to find it.
+  for (const name of ["Prepended", "Inserted", "Orphan"]) {
+    const doomed = afterStale.columns.find((c) => c.name === name);
+    // eslint-disable-next-line no-await-in-loop
+    if (doomed) await sheetService.deleteColumn(shareCode, owner, doomed.key);
+  }
+  sheet = await Sheet.findById(sheet._id);
+
   console.log("\n--- deleting a column hides its cells but keeps them recoverable ---");
   const deadKey = sheet.columns[4].key;
   await sheetService.updateRow(
@@ -305,16 +350,39 @@ const refuses = async (label, fn, code) => {
   check("formatting is stored", formatted.formats[columnKey]?.b, true);
   check("and its colour survives", formatted.formats[columnKey]?.fg, "#dc2626");
 
-  // The palette check is a security boundary: these values become CSS in other
-  // people's browsers, so anything off-list must be dropped, not stored.
-  const injected = await SheetRow.findById(fmtRow._id);
-  const sanitised = await sheetService.updateRow(shareCode, owner, String(injected._id), {
+  // The colour check is a security boundary: these values become CSS in other
+  // people's browsers. Any #rrggbb is allowed — including one that is on no
+  // palette — but the value must be a colour and nothing else.
+  const custom = await SheetRow.findById(fmtRow._id);
+  const customSaved = await sheetService.updateRow(shareCode, owner, String(custom._id), {
     cells: {},
-    formats: { [columnKey]: { fg: "red;background:url(evil)", bg: "#fef9c3" } },
-    version: injected.version,
+    formats: { [columnKey]: { fg: "#4F6EF7", bg: "#123456" } },
+    version: custom.version,
   });
-  check("an off-palette colour is dropped", sanitised.formats[columnKey]?.fg, undefined);
-  check("while a legal one alongside it is kept", sanitised.formats[columnKey]?.bg, "#fef9c3");
+  check("an off-palette custom colour is accepted", customSaved.formats[columnKey]?.bg, "#123456");
+  check("and is normalised to lowercase", customSaved.formats[columnKey]?.fg, "#4f6ef7");
+
+  // Each of these is a colour the pattern must refuse. The payload in the first
+  // is the reason the boundary exists at all: a second CSS declaration smuggled
+  // through a style attribute, served to every collaborator on the sheet.
+  for (const [label, value] of [
+    ["a smuggled second declaration", "red;background:url(https://evil.test/log?c=)"],
+    ["a bare colour keyword", "red"],
+    ["a three-digit shorthand", "#f00"],
+    ["eight digits with alpha", "#ff000080"],
+    ["non-hex characters", "#gggggg"],
+    ["a css function", "rgb(255,0,0)"],
+    ["leading whitespace", " #ff0000"],
+  ]) {
+    const before = await SheetRow.findById(fmtRow._id);
+    const after = await sheetService.updateRow(shareCode, owner, String(before._id), {
+      cells: {},
+      formats: { [columnKey]: { fg: value, bg: "#fef9c3" } },
+      version: before.version,
+    });
+    check(`${label} is dropped`, after.formats[columnKey]?.fg, undefined);
+    check("  …while a legal one alongside it is kept", after.formats[columnKey]?.bg, "#fef9c3");
+  }
 
   console.log("\n--- protected ranges (the lock is server-side) ---");
   const editorUser = renamed; // still an EDITOR on this sheet

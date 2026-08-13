@@ -44,8 +44,8 @@ exports.listSheets = asyncHandler(async (req, res) => {
 
   return ok(
     res,
-    entries.map(({ sheet, role, pendingRequestCount }) =>
-      toSheetDTO(sheet, { role, pendingRequestCount })
+    entries.map(({ sheet, role, pendingRequestCount, preview }) =>
+      toSheetDTO(sheet, { role, pendingRequestCount, preview })
     )
   );
 });

