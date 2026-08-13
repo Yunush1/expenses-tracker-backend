@@ -86,6 +86,26 @@ app.use((req, res, next) => {
 });
 
 app.use(corsMiddleware);
+
+/**
+ * Sheets get a larger body than everything else, and get it **first**.
+ *
+ * Pasting a block out of Excel is the whole point of the grid, and a few hundred
+ * rows of expense data does not fit in 64kb. Raising the global limit to suit one
+ * feature would hand every other endpoint — including the unauthenticated group
+ * routes — a bigger buffer to be flooded with, so the allowance is scoped to the
+ * routes that need it.
+ *
+ * Order is load-bearing: whichever parser runs first consumes the stream, and the
+ * one below then sees `req._body` already set and skips. Mounted the other way
+ * round, the global 64kb would win and this line would do nothing at all — which
+ * would show up as a paste failing at some size nobody wrote down.
+ *
+ * `SHEET_MAX_BULK_ROWS` is the matching bound in the validator; the two are set
+ * together, and 500 rows of ordinary data sits comfortably inside 1mb.
+ */
+app.use("/api/sheets", express.json({ limit: "1mb" }));
+
 app.use(express.json({ limit: "64kb" }));
 app.use(express.urlencoded({ extended: true }));
 

@@ -22,7 +22,8 @@
     "nudge:dry": "cross-env NODE_ENV=development node scripts/send-test-nudge.js --dry",
     "tunel": "cross-env NODE_ENV=development node server.js --tunel",
     "date:check": "cross-env NODE_ENV=development node scripts/check-expense-date.js",
-    "recovery:check": "cross-env NODE_ENV=development node scripts/check-group-recovery.js"
+    "recovery:check": "cross-env NODE_ENV=development node scripts/check-group-recovery.js",
+    "sheets:check": "cross-env NODE_ENV=development node scripts/check-sheets.js"
   },
   "keywords": [
     "expense",
@@ -32,6 +33,7 @@
   ],
   "license": "ISC",
   "dependencies": {
+    "@socket.io/redis-adapter": "^8.3.0",
     "cors": "^2.8.5",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
@@ -42,7 +44,9 @@
     "mongoose": "^9.2.3",
     "morgan": "^1.10.1",
     "node-cron": "^4.6.0",
+    "nodemailer": "^9.0.5",
     "rate-limit-redis": "^4.3.1",
+    "socket.io": "^4.8.3",
     "winston": "^3.19.0",
     "zod": "^3.24.1"
   },

@@ -72,8 +72,21 @@ const corsOptions = {
    * `Authorization` carries the Firebase ID token for the personal ledger. It is
    * attached only when someone is signed in, which is why forgetting it produced
    * a failure that came and went with sign-in state rather than a consistent one.
+   *
+   * `X-Socket-Id` is this tab's live socket, so a sheet edit is not broadcast back
+   * to the client that made it (docs/20-EXPENSE-SHEETS.md §11). It was added to
+   * the API client before this line, and the paragraph above describes precisely
+   * what happened: every sheet request failed preflight, the browser reported
+   * "Network Error" with no response, and the server logged nothing because
+   * nothing arrived. **Adding a header to services/api.js means adding it here.**
    */
-  allowedHeaders: ["Content-Type", "X-Device-Id", "Authorization", "X-Referral-Code"],
+  allowedHeaders: [
+    "Content-Type",
+    "X-Device-Id",
+    "Authorization",
+    "X-Referral-Code",
+    "X-Socket-Id",
+  ],
   // Bearer tokens, not cookies — so the browser never needs to send credentials.
   credentials: false,
 };

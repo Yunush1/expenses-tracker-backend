@@ -6,6 +6,7 @@ const ledgerRoutes = require("./ledgerRoutes");
 const aiRoutes = require("./aiRoutes");
 const pointsRoutes = require("./pointsRoutes");
 const referralRoutes = require("./referralRoutes");
+const sheetRoutes = require("./sheetRoutes");
 
 const router = express.Router();
 
@@ -33,5 +34,15 @@ router.use("/ai", aiRoutes);
 router.use("/points", pointsRoutes);
 /** Invite links and their multi-level rewards (docs/12-REFERRALS.md). */
 router.use("/referrals", referralRoutes);
+/**
+ * Free-form expense grids, shared by email (docs/20-EXPENSE-SHEETS.md).
+ *
+ * The second account-gated resource in this API, and the only one that is
+ * *partly* public: reads go through `optionalAuth` so a sheet set to "anyone with
+ * the link" opens with no account at all, while every write requires one. The
+ * split is per-route rather than at this mount — see sheetRoutes for why that
+ * asymmetry is deliberate and which direction each half fails in.
+ */
+router.use("/sheets", sheetRoutes);
 
 module.exports = router;

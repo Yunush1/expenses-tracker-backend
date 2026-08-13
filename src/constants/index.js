@@ -249,6 +249,160 @@ const BALANCE_STATUS = Object.freeze({
   SETTLED: "SETTLED",
 });
 
+/* ------------------------------ Expense sheets ---------------------------- */
+
+/**
+ * Who can open a sheet without being named on it (docs/20-EXPENSE-SHEETS.md §4).
+ *
+ * Two values, not three. The obvious third — a "listed publicly, indexable"
+ * tier — is deliberately absent: `PUBLIC` here already means "anyone holding the
+ * link", which is the thing people actually reach for, and a discoverable tier
+ * would need a directory, moderation and an abuse story that this feature has no
+ * appetite for. The API also sets `X-Robots-Tag: noindex` on every response
+ * (app.js), so a public sheet is unlisted by construction.
+ *
+ * `PRIVATE` is the default, and it is the stricter default on purpose: a sheet
+ * of company spending that silently starts life readable by anyone with the URL
+ * is the one failure mode worth engineering against.
+ */
+const SHEET_VISIBILITY = Object.freeze({
+  PRIVATE: "PRIVATE",
+  PUBLIC: "PUBLIC",
+});
+
+/**
+ * What someone may do with a sheet, most powerful first.
+ *
+ * Ordered, and compared by `SHEET_ROLE_RANK` rather than by equality, so a check
+ * reads "at least an editor" instead of enumerating every role that qualifies.
+ * Adding a role later then means adding one line here rather than auditing every
+ * comparison in the service.
+ *
+ * There is no COMMENTER. Comments are not a thing this product has, and a role
+ * that grants access to a feature nobody built is a permission that only ever
+ * confuses the person granting it.
+ */
+const SHEET_ROLES = Object.freeze({
+  OWNER: "OWNER",
+  EDITOR: "EDITOR",
+  VIEWER: "VIEWER",
+});
+
+const SHEET_ROLE_RANK = Object.freeze({
+  [SHEET_ROLES.VIEWER]: 1,
+  [SHEET_ROLES.EDITOR]: 2,
+  [SHEET_ROLES.OWNER]: 3,
+});
+
+/** Roles that may be handed out. OWNER is absent: ownership is not a grant. */
+const SHEET_GRANTABLE_ROLES = Object.freeze([SHEET_ROLES.EDITOR, SHEET_ROLES.VIEWER]);
+
+/**
+ * How a caller arrived at the access they have — reported to the client so the UI
+ * can explain itself ("shared with you by Riya" against "anyone with the link can
+ * edit"), and so a viewer can tell a deliberate grant from a public setting that
+ * may be revoked at any moment.
+ */
+const SHEET_ACCESS_SOURCE = Object.freeze({
+  OWNER: "OWNER",
+  GRANT: "GRANT",
+  PUBLIC: "PUBLIC",
+});
+
+/** The life of a "let me in" (docs/20-EXPENSE-SHEETS.md §6). */
+const SHEET_REQUEST_STATUS = Object.freeze({
+  PENDING: "PENDING",
+  APPROVED: "APPROVED",
+  DECLINED: "DECLINED",
+  CANCELLED: "CANCELLED",
+});
+
+/**
+ * What a column *looks like*, never what its cells are allowed to contain.
+ *
+ * This is the honest shape of a free-form grid: every cell is stored as a string
+ * and nothing is rejected for failing to match its column's type. The type drives
+ * presentation only — text alignment, which editor the grid opens, and whether a
+ * column offers a footer total.
+ *
+ * Calling it a type at all is therefore a small lie of convenience, and the
+ * reason it is worth telling: a person setting up an "Amount" column expects
+ * right-aligned numbers and a sum at the bottom, and expects to still be able to
+ * type "approx 400" in one cell without the app arguing. Enforcement would buy
+ * correctness the product elsewhere pays for with `amountMinor` integers — and
+ * this grid deliberately does not (docs/20-EXPENSE-SHEETS.md §2).
+ */
+const SHEET_COLUMN_TYPES = Object.freeze({
+  TEXT: "TEXT",
+  NUMBER: "NUMBER",
+  DATE: "DATE",
+  SELECT: "SELECT",
+  CHECKBOX: "CHECKBOX",
+});
+
+/**
+ * Horizontal alignment of a cell's contents. Vertical is deliberately absent:
+ * rows are a single fixed height, so there is nothing to align against.
+ */
+const SHEET_ALIGNMENTS = Object.freeze({
+  LEFT: "LEFT",
+  CENTER: "CENTER",
+  RIGHT: "RIGHT",
+});
+
+/**
+ * The palette offered for text and fill colour.
+ *
+ * A fixed list rather than a free colour picker, and the reason is legibility
+ * rather than taste: a picker lets someone set white text on a white fill, or a
+ * fill dark enough to make the default black text unreadable — and because a
+ * sheet is shared, they do it to everybody else's screen as well as their own.
+ * These are chosen to stay readable against the grid's white background, and the
+ * fills to stay readable under dark text.
+ *
+ * Stored as hex strings rather than as names so the value is self-describing on
+ * the wire and needs no lookup table on the client. Validated against this list
+ * on write, so a hand-rolled request cannot inject arbitrary CSS.
+ */
+const SHEET_TEXT_COLOURS = Object.freeze([
+  "#0f172a", "#dc2626", "#ea580c", "#ca8a04",
+  "#16a34a", "#0891b2", "#2563eb", "#7c3aed",
+  "#db2777", "#64748b", "#ffffff",
+]);
+
+const SHEET_FILL_COLOURS = Object.freeze([
+  "#ffffff", "#fee2e2", "#ffedd5", "#fef9c3",
+  "#dcfce7", "#cffafe", "#dbeafe", "#ede9fe",
+  "#fce7f3", "#f1f5f9", "#e2e8f0", "#0f172a",
+]);
+
+/**
+ * The columns a brand new sheet starts with.
+ *
+ * Deliberately **unnamed** — `A`…`F`, all plain text — rather than a guessed
+ * schema like Date / Description / Amount.
+ *
+ * A named default is a suggestion with authority: it tells someone this sheet is
+ * for the kind of expense log we imagined, and the columns they actually needed
+ * (Vendor, Project, GST, Approver) arrive as an afterthought to the right of ours.
+ * Worse, half of them will rename Date to something else and leave a `DATE`-typed
+ * column behind it, so the type stops describing the contents.
+ *
+ * Letters, matching the address strip the grid draws above the header, so an
+ * untouched sheet reads exactly like a blank spreadsheet and the header row is
+ * visibly *yours to fill in* rather than something to work around. Six columns
+ * because that is roughly a screen's width — the point is room to start typing,
+ * not a schema.
+ */
+const SHEET_DEFAULT_COLUMNS = Object.freeze([
+  { name: "A", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "B", type: SHEET_COLUMN_TYPES.TEXT, width: 220 },
+  { name: "C", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "D", type: SHEET_COLUMN_TYPES.TEXT, width: 130 },
+  { name: "E", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+  { name: "F", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
+]);
+
 const LIMITS = Object.freeze({
   MAX_MEMBERS_PER_GROUP: 50,
   /** One person, several browsers. Bounded so a shared device cannot accumulate forever. */
@@ -294,6 +448,63 @@ const LIMITS = Object.freeze({
    * so the widest product is 1e9 × 1000 = 1e12 — three orders of magnitude clear.
    */
   MAX_SHARE_WEIGHT: 1000,
+
+  /* ---------------------------- Expense sheets --------------------------- */
+
+  SHEET_TITLE_MAX: 120,
+  SHEET_DESC_MAX: 500,
+  SHEET_COLUMN_NAME_MAX: 60,
+  /**
+   * Wide enough for a real expense register — date, description, category,
+   * amount, vendor, project, invoice no., GST, approver, status, and room to
+   * spare — and narrow enough that one row still fits a single document
+   * comfortably. Past this the thing being built is a database, not a sheet.
+   */
+  SHEET_MAX_COLUMNS: 40,
+  /** One cell. Generous for a note, far short of storing a document in a grid. */
+  SHEET_CELL_MAX: 2000,
+  SHEET_MAX_SELECT_OPTIONS: 50,
+  /**
+   * Rows per sheet. A cap exists so one sheet cannot become an unbounded
+   * collection scan; 20 000 is several years of daily expenses for a small
+   * company, which is the case this was built for.
+   */
+  SHEET_MAX_ROWS: 20_000,
+  /**
+   * Rows in one bulk write — the clipboard paste path.
+   *
+   * Bounded by the request body limit rather than by taste: sheet routes parse up
+   * to `SHEET_BODY_LIMIT` (app.js), and 500 rows of ordinary expense data sits
+   * inside that with room to spare. A larger paste is split by the client into
+   * consecutive calls, which is also what keeps one paste from holding the event
+   * loop for a noticeable beat.
+   */
+  SHEET_MAX_BULK_ROWS: 500,
+  /**
+   * Gap left between adjacent row positions, so inserting between two rows is an
+   * arithmetic midpoint rather than a renumbering of everything below it. See
+   * models/sheetRow.js for what happens when the gaps run out.
+   */
+  SHEET_POSITION_STEP: 65_536,
+  /** Pending invitations plus active grants on one sheet. Bounds the share list. */
+  SHEET_MAX_GRANTS: 200,
+  /**
+   * Protected ranges per sheet. Each is checked on every cell write, so this is
+   * the bound on that check's cost as much as on the UI's.
+   */
+  SHEET_MAX_PROTECTED_RANGES: 50,
+  /** Rows/columns that can be frozen. Beyond this there is no scrollable area left. */
+  SHEET_MAX_FROZEN: 10,
+  /** Point size for cell text. Below 8 is unreadable; above 32 breaks the row height. */
+  SHEET_FONT_SIZE_MIN: 8,
+  SHEET_FONT_SIZE_MAX: 32,
+  /**
+   * How long an unanswered access request stays answerable. Far longer than a
+   * group's 15 minutes (config.join.requestTtlMinutes): a group join is a live
+   * moment with everyone in the same room, whereas "can I see the Q3 expenses?"
+   * is a message that legitimately waits for someone to come back from leave.
+   */
+  SHEET_REQUEST_TTL_DAYS: 30,
 });
 
 const ERROR_CODES = Object.freeze({
@@ -356,6 +567,46 @@ const ERROR_CODES = Object.freeze({
    */
   ACCOUNT_ALREADY_IN_GROUP: "ACCOUNT_ALREADY_IN_GROUP",
   VERSION_CONFLICT: "VERSION_CONFLICT",
+
+  /* ---------------------------- Expense sheets --------------------------- */
+
+  SHEET_NOT_FOUND: "SHEET_NOT_FOUND",
+  SHEET_ROW_NOT_FOUND: "SHEET_ROW_NOT_FOUND",
+  SHEET_COLUMN_NOT_FOUND: "SHEET_COLUMN_NOT_FOUND",
+  /**
+   * Signed in, but nobody has shared this sheet with this account — the cue for
+   * the client to show the "request access" screen rather than a dead end. This
+   * is a 403 and never a 404: the sheet's existence is already implied by the
+   * link the person is holding, and pretending otherwise would make the request
+   * flow impossible to offer.
+   */
+  SHEET_ACCESS_DENIED: "SHEET_ACCESS_DENIED",
+  /** Read access is enough; this particular action needs EDITOR or OWNER. */
+  SHEET_EDITOR_ONLY: "SHEET_EDITOR_ONLY",
+  /** Only the owner may reshare, change visibility, or delete. */
+  SHEET_OWNER_ONLY: "SHEET_OWNER_ONLY",
+  /**
+   * The sheet was shared with an address this account has not proved it holds.
+   *
+   * Distinct from SHEET_ACCESS_DENIED because the remedy is completely
+   * different, and actionable: verify the email, or sign in as the invited
+   * address. Telling someone "no access" when they are one click from having it
+   * sends them to ask for a second invitation that will not help either
+   * (docs/20-EXPENSE-SHEETS.md §5).
+   */
+  SHEET_EMAIL_UNVERIFIED: "SHEET_EMAIL_UNVERIFIED",
+  SHEET_REQUEST_NOT_FOUND: "SHEET_REQUEST_NOT_FOUND",
+  SHEET_REQUEST_ALREADY_DECIDED: "SHEET_REQUEST_ALREADY_DECIDED",
+  SHEET_ALREADY_SHARED: "SHEET_ALREADY_SHARED",
+  SHEET_LIMIT_REACHED: "SHEET_LIMIT_REACHED",
+  /**
+   * The cell is inside a range the owner protected. Its own code because the
+   * client's response is specific: show which range, and who to ask — not the
+   * generic "you can't edit this sheet", which is untrue and would send an
+   * editor to request access they already have.
+   */
+  SHEET_RANGE_LOCKED: "SHEET_RANGE_LOCKED",
+
   DUPLICATE: "DUPLICATE",
   RATE_LIMITED: "RATE_LIMITED",
   ORIGIN_NOT_ALLOWED: "ORIGIN_NOT_ALLOWED",
@@ -379,6 +630,17 @@ module.exports = {
   ACTIVITY_TYPES,
   BALANCE_STATUS,
   JOIN_REQUEST_STATUS,
+  SHEET_VISIBILITY,
+  SHEET_ROLES,
+  SHEET_ROLE_RANK,
+  SHEET_GRANTABLE_ROLES,
+  SHEET_ACCESS_SOURCE,
+  SHEET_REQUEST_STATUS,
+  SHEET_COLUMN_TYPES,
+  SHEET_DEFAULT_COLUMNS,
+  SHEET_ALIGNMENTS,
+  SHEET_TEXT_COLOURS,
+  SHEET_FILL_COLOURS,
   LIMITS,
   ERROR_CODES,
   DEFAULT_CURRENCY,

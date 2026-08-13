@@ -193,6 +193,46 @@ const config = Object.freeze({
   }),
 
   /**
+   * Outgoing email — sheet invitations and access requests
+   * (docs/20-EXPENSE-SHEETS.md §5).
+   *
+   * Optional, like Firebase and Redis above, and for the same reason: a fresh
+   * checkout with no SMTP account should get a working app whose share dialog
+   * hands you a link to send yourself, not a server that refuses to boot or a
+   * share button that throws. `isMailEnabled()` in config/mail.js is what every
+   * caller branches on, and the share response says plainly whether a message
+   * actually went out — a UI that claims "invitation sent" when nothing was sent
+   * is the failure this is shaped to avoid.
+   *
+   * `SMTP_SECURE` follows the protocol's own split rather than being a matter of
+   * taste: port 465 is TLS from the first byte (`secure: true`), while 587 opens
+   * in the clear and upgrades via STARTTLS (`secure: false`) — so it defaults
+   * from the port and is only worth setting for a server that disagrees.
+   */
+  mail: Object.freeze({
+    host: (process.env.SMTP_HOST || "").trim(),
+    port: Number(process.env.SMTP_PORT ?? 587),
+    secure:
+      process.env.SMTP_SECURE === undefined || process.env.SMTP_SECURE.trim() === ""
+        ? Number(process.env.SMTP_PORT ?? 587) === 465
+        : process.env.SMTP_SECURE.trim().toLowerCase() === "true",
+    user: (process.env.SMTP_USER || "").trim(),
+    pass: process.env.SMTP_PASS || "",
+    /**
+     * Falls back to the SMTP username because that is the address most providers
+     * will accept as a sender anyway — and a `From` that the relay rejects turns
+     * every invitation into a bounce that nobody sees.
+     */
+    from: (process.env.MAIL_FROM || process.env.SMTP_USER || "").trim(),
+    replyTo: (process.env.MAIL_REPLY_TO || "").trim(),
+    /**
+     * Name used in subject lines and the message body. Separate from the product
+     * name in code so a white-labelled deployment is a config change.
+     */
+    appName: (process.env.MAIL_APP_NAME || "Splitly").trim(),
+  }),
+
+  /**
    * The evening "log your expenses" nudge. Off unless switched on, because a
    * scheduled job that messages every user is not something a fresh checkout
    * should start doing by itself.

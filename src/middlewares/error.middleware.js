@@ -13,9 +13,11 @@ module.exports = (err, req, res, next) => {
   let code = ERROR_CODES.INTERNAL_ERROR;
   let message = "Something went wrong";
   let errors = [];
+  /** Context the client acts on, when the thrower supplied any — see ApiError.details. */
+  let details = null;
 
   if (err instanceof ApiError) {
-    ({ statusCode, code, message, errors } = err);
+    ({ statusCode, code, message, errors, details } = err);
   } else if (err?.name === "ValidationError" && err.errors) {
     // Mongoose schema validation
     statusCode = 400;
@@ -47,6 +49,8 @@ module.exports = (err, req, res, next) => {
 
   const body = { success: false, message, code };
   if (errors.length > 0) body.errors = errors;
+  // Only ever what the thrower explicitly put there; never inferred from `err`.
+  if (details) body.details = details;
   if (!config.isProduction && statusCode >= 500) body.stack = err.stack;
 
   return res.status(statusCode).json(body);

@@ -14,6 +14,23 @@ class ApiError extends Error {
     this.errors = errors;
     this.isOperational = true;
 
+    /**
+     * Structured context a client needs in order to *act* on the refusal, as
+     * opposed to `errors`, which describes what was wrong with the request.
+     *
+     * Set by the thrower, emitted verbatim by error.middleware.js, and omitted
+     * when empty. It exists because some refusals are themselves a screen rather
+     * than a dead end: a 403 on a private sheet carries the sheet's title and
+     * owner so the client can render "ask for access" without making a second
+     * call for a resource it was just told it cannot read
+     * (docs/20-EXPENSE-SHEETS.md §6).
+     *
+     * **Whatever goes in here is disclosed to a caller who has just been
+     * refused.** Put in the minimum that makes the next step possible, and never
+     * anything derived from the contents being protected.
+     */
+    this.details = null;
+
     Error.captureStackTrace(this, this.constructor);
   }
 }
