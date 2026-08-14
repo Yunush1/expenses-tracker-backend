@@ -53,15 +53,43 @@ const record = ({ model, promptTokens, completionTokens }) => {
  *
  * Rates are per million tokens because that is how every provider quotes them —
  * converting to per-token here would bury a factor of a million in a constant.
+ *
+ * ## Why the model decides the rate
+ *
+ * Reading a receipt costs multiples of parsing a sentence — roughly ₹2 against
+ * ₹0.15 (docs/10-AI-ASSISTANT.md §7) — so a single blended rate would make the
+ * expensive half invisible inside the cheap half's volume. Since buckets are
+ * already keyed on `{ day, model }`, costing per bucket is free: each is priced at
+ * the rate for what actually ran.
+ *
+ * An unrecognised model falls back to the text rates. That is the safer default of
+ * the two: it under-reports a vision bill rather than inflating an ordinary one,
+ * and the vision model is a config value an operator sets deliberately.
  */
-const costOf = ({ promptTokens = 0, completionTokens = 0 }) => {
-  const { pricePerMTokIn, pricePerMTokOut } = config.ai;
-  if (!pricePerMTokIn && !pricePerMTokOut) return null;
+const ratesFor = (model) =>
+  model && config.ai.visionModel && model === config.ai.visionModel
+    ? { in: config.ai.visionPricePerMTokIn, out: config.ai.visionPricePerMTokOut }
+    : { in: config.ai.pricePerMTokIn, out: config.ai.pricePerMTokOut };
 
-  return (
-    (promptTokens / 1_000_000) * pricePerMTokIn +
-    (completionTokens / 1_000_000) * pricePerMTokOut
-  );
+const costOf = ({ promptTokens = 0, completionTokens = 0, model = null }) => {
+  const rates = ratesFor(model);
+  if (!rates.in && !rates.out) return null;
+
+  return (promptTokens / 1_000_000) * rates.in + (completionTokens / 1_000_000) * rates.out;
+};
+
+/**
+ * Adds costs that may individually be null.
+ *
+ * `null` means "no price configured", which is not zero — but a month containing
+ * one priced model and one unpriced one does have a known partial cost, and
+ * reporting null for the whole month because a single bucket lacks a rate would
+ * hide the spend that *is* known. So nulls are skipped, and the total is null only
+ * when nothing at all could be priced.
+ */
+const sumCosts = (costs) => {
+  const known = costs.filter((cost) => cost !== null);
+  return known.length === 0 ? null : known.reduce((sum, cost) => sum + cost, 0);
 };
 
 /**

@@ -439,6 +439,47 @@ const config = Object.freeze({
     timeoutMs: Number(process.env.AI_TIMEOUT_MS ?? 30000),
 
     /**
+     * The model that can read a photograph (docs/10-AI-ASSISTANT.md §4.2).
+     *
+     * Empty by default, and that is a deliberate off switch rather than an
+     * oversight: receipt scanning is the most expensive call this app can make —
+     * roughly ₹2 against ₹0.15 for parsing a sentence — so a deployment gets it by
+     * asking for it, never by inheriting it from a text key that happens to work.
+     *
+     * It has to be a *different* model from `ai.model`. The text model here is a
+     * 70B with no vision at all, and handed an image it does not error: it invents
+     * a plausible receipt. A confident, fabricated set of line items going into
+     * somebody's shared expenses is the worst available failure, which is why the
+     * vision path refuses to run rather than falling back.
+     */
+    visionModel: (process.env.AI_VISION_MODEL || "").trim(),
+    /**
+     * Longer than the text timeout, because a photograph is several thousand
+     * tokens of input before the model writes its first word. At the text timeout
+     * a working request surfaces as "busy", and the user retries — paying for the
+     * scan twice.
+     */
+    visionTimeoutMs: Number(process.env.AI_VISION_TIMEOUT_MS ?? 60000),
+    /**
+     * Vision rates, separate from the text ones, for the same reason the meter
+     * keys on the model: input is usually similar and output is priced several
+     * times higher, and one blended rate would make the receipt-scan bill
+     * unreadable at exactly the moment it needs reading (§1.4 of docs/22).
+     */
+    visionPricePerMTokIn: Number(process.env.AI_VISION_PRICE_PER_MTOK_IN ?? 0),
+    visionPricePerMTokOut: Number(process.env.AI_VISION_PRICE_PER_MTOK_OUT ?? 0),
+    /**
+     * The largest image accepted, in bytes, measured after base64 is decoded.
+     *
+     * 4 MB is a generous phone photo. The real control is client-side downscaling
+     * — vision cost scales with resolution, so a 12-megapixel original costs
+     * several times what a legible 1600px one does — but a server cannot rely on a
+     * client having done it, and this is the bound that stops a 30 MB upload
+     * becoming a 30 MB provider bill.
+     */
+    maxImageBytes: Number(process.env.AI_MAX_IMAGE_BYTES ?? 4 * 1024 * 1024),
+
+    /**
      * What a million tokens costs, so spend can be measured here.
      *
      * ## Why this is configured rather than fetched

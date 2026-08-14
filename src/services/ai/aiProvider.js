@@ -21,11 +21,37 @@ const isConfigured = () => Boolean(config.ai.apiKey);
  * whose message is safe to log — never the request body, which contains the
  * user's financial context.
  */
-const complete = async ({ system, user, maxTokens = 500, temperature = 0.2 }) => {
+const complete = async ({
+  system,
+  user,
+  maxTokens = 500,
+  temperature = 0.2,
+  /**
+   * Data URLs to send alongside the text — a photographed receipt, today.
+   *
+   * The multi-part `content` array is the same OpenAI chat-completions shape the
+   * text path uses, so this is one extra branch rather than a second adapter. A
+   * request with images is still a chat completion; it simply costs several times
+   * more and needs a model that can see (docs/10-AI-ASSISTANT.md §7).
+   */
+  images = [],
+  /**
+   * Which model to ask. Defaults to the text model, and is overridden for vision
+   * because a 70B text model cannot read a photograph and fails in the least
+   * useful way available — a confident, invented answer.
+   */
+  model = config.ai.model,
+} = {}) => {
   if (!isConfigured()) throw new Error("AI is not configured");
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), config.ai.timeoutMs);
+  /**
+   * Vision calls get their own, longer timeout. A photograph is several thousand
+   * tokens of input before the model writes a word, and aborting at the text
+   * timeout would surface as "the assistant is busy" on a request that was working.
+   */
+  const timeoutMs = images.length > 0 ? config.ai.visionTimeoutMs : config.ai.timeoutMs;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(`${config.ai.baseUrl}/v1/chat/completions`, {
@@ -36,10 +62,28 @@ const complete = async ({ system, user, maxTokens = 500, temperature = 0.2 }) =>
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: config.ai.model,
+        model,
         messages: [
           { role: "system", content: system },
-          { role: "user", content: user },
+          {
+            role: "user",
+            /**
+             * A plain string when there is nothing to look at, so every existing
+             * caller sends exactly the bytes it sent before this parameter
+             * existed — some providers behind the router are stricter about the
+             * array form than the spec suggests.
+             *
+             * Text first, image second: the instruction is what the model should
+             * be holding while it reads the picture.
+             */
+            content:
+              images.length === 0
+                ? user
+                : [
+                    { type: "text", text: user },
+                    ...images.map((url) => ({ type: "image_url", image_url: { url } })),
+                  ],
+          },
         ],
         max_tokens: maxTokens,
         /**
@@ -91,7 +135,11 @@ const complete = async ({ system, user, maxTokens = 500, temperature = 0.2 }) =>
      * return type stays a plain string so no caller changes.
      */
     aiUsage.record({
-      model: config.ai.model,
+      // The model actually used, not the configured default — vision costs
+      // multiples of text, and a meter that filed both under one name would hide
+      // exactly the number this feature has to be judged on. `aiUsage` keys its
+      // buckets on `{ day, model }`, so this separates them with no other change.
+      model,
       // `usage` is part of the OpenAI response shape every provider behind this
       // router implements. Absent on a provider that does not, in which case the
       // call is still counted and the tokens read zero rather than breaking.
@@ -108,4 +156,14 @@ const complete = async ({ system, user, maxTokens = 500, temperature = 0.2 }) =>
   }
 };
 
-module.exports = { complete, isConfigured };
+/**
+ * Whether this deployment can read a photograph.
+ *
+ * Separate from `isConfigured` because it fails separately: a provider key that
+ * works perfectly for text says nothing about whether the configured vision model
+ * exists on it. Callers use this to hide a camera button rather than offer one
+ * that always errors.
+ */
+const isVisionConfigured = () => isConfigured() && Boolean(config.ai.visionModel);
+
+module.exports = { complete, isConfigured, isVisionConfigured };
