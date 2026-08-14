@@ -30,6 +30,21 @@ const splitValues = z
   .max(LIMITS.MAX_PARTICIPANTS, `At most ${LIMITS.MAX_PARTICIPANTS} participants`)
   .optional();
 
+/**
+ * What this expense is, when somebody has said.
+ *
+ * Three states, and all three are meaningful:
+ *
+ *   omitted   → let the server infer it from the description (the default)
+ *   `null`    → the same, explicitly — how an edit clears a choice back to auto
+ *   a value   → that category, which always beats inference
+ *
+ * A closed enum rather than free text, for the reason already argued at
+ * `LEDGER_CATEGORIES`: an open field becomes forty spellings of "food", and the
+ * breakdown built on it stops being a breakdown.
+ */
+const category = z.enum(LEDGER_CATEGORIES).nullable().optional();
+
 const createExpenseSchema = z.object({
   description: trimmedString(LIMITS.EXPENSE_DESC_MAX, "Description"),
   amount,
@@ -38,6 +53,7 @@ const createExpenseSchema = z.object({
   splitType: z.nativeEnum(SPLIT_TYPES).optional().default(SPLIT_TYPES.EQUAL),
   splitValues,
   expenseDate,
+  category,
   notes: z.string().trim().max(LIMITS.EXPENSE_NOTES_MAX).optional().default(""),
   clientRequestId,
 });
@@ -50,6 +66,7 @@ const updateExpenseSchema = z.object({
   splitType: z.nativeEnum(SPLIT_TYPES).optional(),
   splitValues,
   expenseDate,
+  category,
   notes: z.string().trim().max(LIMITS.EXPENSE_NOTES_MAX).optional(),
   // Required: an update must state the version it read, so a concurrent edit is
   // rejected instead of silently overwritten.
@@ -72,6 +89,7 @@ const createExpenseBatchSchema = z.object({
         participantIds,
         splitType: z.nativeEnum(SPLIT_TYPES).optional().default(SPLIT_TYPES.EQUAL),
         splitValues,
+        category,
         notes: z.string().trim().max(LIMITS.EXPENSE_NOTES_MAX).optional().default(""),
         // One key per item, not per request: a retry must not turn three items
         // into six, and the items are independent records on the server.

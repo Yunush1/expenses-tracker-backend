@@ -250,6 +250,73 @@ const periods = (groupId) =>
     { $sort: { "_id.year": -1, "_id.month": -1 } },
   ]);
 
+/**
+ * Where the money went, grouped by category.
+ *
+ * ## Two different sums, and why they cannot be one
+ *
+ * For the **group**, the figure is `amountMinor` — what the expense cost. For **one
+ * member**, it is that member's share, because ₹3,000 of rent split four ways is
+ * ₹750 of their money and nobody wants to see their own spending inflated by three
+ * flatmates. Summing the full amount per member would make every member's total add
+ * up to four times the group's, which is the kind of number people notice and stop
+ * trusting the screen over.
+ *
+ * ## Uncategorised is a bucket, not an omission
+ *
+ * `category` is null on everything written before inference existed, and empty on
+ * anything the rules did not match. Both are folded into one `UNCATEGORISED` key
+ * rather than dropped: a breakdown whose slices do not add up to the total people
+ * can see on the same screen is a breakdown they will assume is broken.
+ */
+const categoryTotals = (groupId, { from, to, memberId } = {}) => {
+  const match = { groupId: new mongoose.Types.ObjectId(String(groupId)), isDeleted: false };
+
+  // Whole days, matching listByGroup — see the note there for why.
+  const range = {};
+  if (from) {
+    const start = new Date(from);
+    start.setUTCHours(0, 0, 0, 0);
+    range.$gte = start;
+  }
+  if (to) {
+    const end = new Date(to);
+    end.setUTCHours(23, 59, 59, 999);
+    range.$lte = end;
+  }
+  if (Object.keys(range).length > 0) match.expenseDate = range;
+
+  /** Null, empty and missing all mean the same thing to a reader. */
+  const categoryKey = {
+    $ifNull: [{ $cond: [{ $eq: ["$category", ""] }, null, "$category"] }, "UNCATEGORISED"],
+  };
+
+  const stages = [{ $match: match }];
+
+  if (memberId) {
+    stages.push(
+      { $unwind: "$shares" },
+      { $match: { "shares.memberId": new mongoose.Types.ObjectId(String(memberId)) } },
+      {
+        $group: {
+          _id: categoryKey,
+          totalMinor: { $sum: "$shares.amountMinor" },
+          count: { $sum: 1 },
+        },
+      }
+    );
+  } else {
+    stages.push({
+      $group: { _id: categoryKey, totalMinor: { $sum: "$amountMinor" }, count: { $sum: 1 } },
+    });
+  }
+
+  // Largest first: the question is "where did it go", and the answer is the top row.
+  stages.push({ $sort: { totalMinor: -1 } });
+
+  return Expense.aggregate(stages);
+};
+
 const deleteByGroup = (groupId, session = null) => Expense.deleteMany({ groupId }, { session });
 
 module.exports = {
@@ -265,5 +332,6 @@ module.exports = {
   countInvolvingMember,
   aggregateTotals,
   periods,
+  categoryTotals,
   deleteByGroup,
 };

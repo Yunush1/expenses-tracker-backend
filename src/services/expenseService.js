@@ -371,8 +371,23 @@ const updateExpense = async ({ group, actor, expenseId, dto }) => {
     {
       $set: {
         description: dto.description ?? existing.description,
-        // Re-inferred with the description, so an edit does not leave the old label.
-        category: inferCategory(dto.description ?? existing.description, dto.category),
+        /**
+         * A category the client did not mention is left alone.
+         *
+         * This used to re-infer on every edit, which was right while nothing could
+         * set the field by hand. Now that the form has a picker, re-inferring
+         * would quietly undo somebody's correction — file the airport Uber under
+         * OFFICE, fix a typo in the description a week later, and it silently
+         * becomes TRAVEL again.
+         *
+         * So: absent means keep, `null` means "back to automatic", and a value
+         * wins outright. Inference still fills the gap for the rows written before
+         * any of this existed.
+         */
+        category:
+          dto.category === undefined
+            ? existing.category || inferCategory(dto.description ?? existing.description)
+            : inferCategory(dto.description ?? existing.description, dto.category),
         amountMinor,
         paidBy,
         splitType,

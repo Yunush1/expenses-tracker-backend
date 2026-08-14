@@ -32,6 +32,33 @@ const toGroupDTO = (group) => ({
   lastActivityAt: group.lastActivityAt,
 });
 
+/**
+ * What a group's plan lets it do (docs/22-MONETIZATION.md §6).
+ *
+ * Four keys, and the omissions are the design. There is **no price** anywhere in
+ * here: what something costs is a question for the upgrade screen, answered by a
+ * pricing endpoint, so that a summary sitting in a client's cache from last week
+ * cannot quote a figure that has since changed. There is no payer identity either
+ * — this payload is read by every member, and who is paying is between the payer
+ * and the billing system.
+ *
+ * `features` is a flat map of booleans meaning "may this group do this **now**".
+ * For a metered feature that folds the allowance in: a free group with scans left
+ * reads `true`, and the same group with none reads `false`. One boolean the client
+ * can trust beats a flag that says "no" beside a counter that says "three left".
+ *
+ * `limits` carries the numbers behind those booleans, because the wall shown at
+ * the limit has to say what was used and when it comes back (§8) — a refusal with
+ * no explanation converts nobody.
+ */
+const toEntitlementDTO = (snapshot) => ({
+  plan: snapshot.plan,
+  status: snapshot.status,
+  expiresAt: snapshot.expiresAt,
+  features: snapshot.features,
+  limits: snapshot.limits,
+});
+
 /** Counts both the array and the pre-migration scalar. See models/member.js. */
 const deviceCountOf = (member) => {
   const ids = new Set(member.deviceIds || []);
@@ -185,6 +212,7 @@ const toBalanceDTO = (balance, currentMemberId = null, currency = "INR") => ({
 
 module.exports = {
   toGroupDTO,
+  toEntitlementDTO,
   toMemberDTO,
   toPublicMemberDTO,
   toExpenseDTO,

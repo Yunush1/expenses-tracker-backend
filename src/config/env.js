@@ -165,6 +165,121 @@ const referralConfig = (() => {
   });
 })();
 
+/**
+ * How many of a metered feature a plan gets per month.
+ *
+ * Metered means it costs money to serve — a vision model per receipt, a render per
+ * export — so the value is always a finite number and **never** "unlimited"
+ * (docs/22-MONETIZATION.md §7). A generous number is honest and survivable; an
+ * unlimited promise is one the provider bill does not honour, and withdrawing it
+ * later costs more trust than it ever earned.
+ *
+ * Floored at zero rather than at one: an operator may legitimately want a free
+ * tier with no receipt scans at all, and that is a pricing decision rather than a
+ * misconfiguration.
+ */
+const meteredAllowance = (raw, fallback) => {
+  const value = Number(raw ?? fallback);
+  return Number.isFinite(value) ? Math.max(0, Math.round(value)) : fallback;
+};
+
+/**
+ * How far back a feature reaches, in months. `0` in the environment means *all* of
+ * it and is resolved to `null` here.
+ *
+ * Safe to leave unbounded in a way the metered features are not, because history
+ * that already exists costs nothing extra to read: this is the free tier's "current
+ * period only" against the paid tier's "everything", not a meter.
+ */
+const depthAllowance = (raw, fallback) => {
+  const value = Number(raw ?? fallback);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return Math.round(value);
+};
+
+/**
+ * What each plan may do, resolved once at boot (docs/22-MONETIZATION.md §5, §7).
+ *
+ * ## Why there are two allowance sets and three plans
+ *
+ * Group Pro and a Trip Pass grant exactly the same things. They differ in term —
+ * one renews, the other ends by itself — and term is a property of the grant, not
+ * of the feature set. Giving them separate tables would be two places to update
+ * every time a limit moves, and the day they drift is the day a trip pass silently
+ * buys less than the page selling it said.
+ *
+ * ## Why there are no prices here
+ *
+ * Because nobody can price this yet, and a number typed in now would be a guess
+ * wearing the authority of config. Two of the sellable features are metered calls
+ * to a paid provider, and docs/22 §1.4 is explicit that the AI spend meter has to
+ * run for a month before any figure means anything. What can be committed to now
+ * is the *shape*: limits in data, per environment, never in the client bundle.
+ */
+const entitlementConfig = (() => {
+  const free = Object.freeze({
+    /**
+     * Small, real, and deliberately not zero. A feature nobody has tried is a
+     * feature nobody will pay for, so the free tier gets a genuine taste of the
+     * metered ones rather than a locked door (§7).
+     */
+    receiptScans: meteredAllowance(process.env.ENTITLEMENT_FREE_RECEIPT_SCANS, 3),
+    exports: meteredAllowance(process.env.ENTITLEMENT_FREE_EXPORTS, 2),
+    /** One or two templates: enough to set up rent, not enough to run a household. */
+    recurringExpenses: meteredAllowance(process.env.ENTITLEMENT_FREE_RECURRING, 1),
+    /** The current period only — which is what the app already shows for free. */
+    analyticsMonths: depthAllowance(process.env.ENTITLEMENT_FREE_ANALYTICS_MONTHS, 1),
+    /**
+     * Off. Unlike everything above it, currency conversion has no meaningful
+     * fractional taste — half a conversion is a wrong number on a balance — so it
+     * is the one feature that is a flag rather than an allowance.
+     */
+    currencyConversion: false,
+  });
+
+  const paid = Object.freeze({
+    receiptScans: meteredAllowance(process.env.ENTITLEMENT_PAID_RECEIPT_SCANS, 50),
+    exports: meteredAllowance(process.env.ENTITLEMENT_PAID_EXPORTS, 100),
+    recurringExpenses: meteredAllowance(process.env.ENTITLEMENT_PAID_RECURRING, 25),
+    /** Zero means the whole history. See depthAllowance. */
+    analyticsMonths: depthAllowance(process.env.ENTITLEMENT_PAID_ANALYTICS_MONTHS, 0),
+    currencyConversion: true,
+  });
+
+  /**
+   * Not refused, because an operator may be mid-way through a repricing — but a
+   * paid tier that grants less than the free one is a bug the app itself cannot
+   * see, and the person it lands on has already paid.
+   */
+  const stingy = ["receiptScans", "exports", "recurringExpenses"].filter(
+    (key) => paid[key] < free[key]
+  );
+
+  if (stingy.length > 0) {
+    logger.warn(
+      `[config] The paid plan allows less than the free one for: ${stingy.join(", ")}. ` +
+      "Check the ENTITLEMENT_PAID_* variables."
+    );
+  }
+
+  return Object.freeze({
+    free,
+    paid,
+    /**
+     * How long a hand-issued grant lasts when nobody says otherwise.
+     *
+     * A default at all, rather than "forever", because an operator granting a plan
+     * to look at something is the commonest grant there is and a permanent one
+     * left behind is invisible — there is no billing system to notice it.
+     */
+    defaultGrantDays: Math.max(1, Number(process.env.ENTITLEMENT_DEFAULT_GRANT_DAYS ?? 30)),
+    /** The ceiling on any single grant, so a fat finger cannot gift a decade. */
+    maxGrantDays: Math.max(1, Number(process.env.ENTITLEMENT_MAX_GRANT_DAYS ?? 3650)),
+    /** What a referral payout is worth in days of Group Pro (§11). */
+    referralGrantDays: Math.max(0, Number(process.env.ENTITLEMENT_REFERRAL_DAYS ?? 30)),
+  });
+})();
+
 const config = Object.freeze({
   env: NODE_ENV,
   isProduction: NODE_ENV === "production",
@@ -416,6 +531,18 @@ const config = Object.freeze({
    *    See `referralService` for the guards that follow from this.
    */
   referral: referralConfig,
+
+  /**
+   * What each plan may do (docs/22-MONETIZATION.md).
+   *
+   * Group-scoped, because a group is a server-side row with a durable id while a
+   * no-account visitor is a random UUID in `localStorage` — see PLANS in
+   * constants. One member pays, everyone in the group benefits, and nobody else
+   * has to sign in to notice.
+   *
+   * Resolved above as `entitlementConfig`.
+   */
+  entitlement: entitlementConfig,
 
   join: Object.freeze({
     /**

@@ -1,17 +1,21 @@
 const express = require("express");
 
 const groupController = require("../controllers/groupController");
+const entitlementController = require("../controllers/entitlementController");
 const joinRequestController = require("../controllers/joinRequestController");
 const balanceController = require("../controllers/balanceController");
 // Mounted on the group router rather than the expense one: periods describe the
 // group's timeline, and the expense router is scoped under /expenses.
 const expenseController = require("../controllers/expenseController");
 const activityController = require("../controllers/activityController");
+const analyticsController = require("../controllers/analyticsController");
 const memberRoutes = require("./memberRoutes");
 const expenseRoutes = require("./expenseRoutes");
 const settlementRoutes = require("./settlementRoutes");
 
 const validate = require("../middlewares/validate");
+const requireAuth = require("../middlewares/requireAuth");
+const requireAdmin = require("../middlewares/requireAdmin");
 const {
   createGroupLimiter,
   writeLimiter,
@@ -34,7 +38,12 @@ const {
   createJoinRequestSchema,
   decideJoinRequestSchema,
 } = require("../validators/joinRequestValidators");
+const {
+  grantEntitlementSchema,
+  revokeEntitlementSchema,
+} = require("../validators/entitlementValidators");
 const { listActivitiesQuery } = require("../validators/activityValidators");
+const { categoryBreakdownQuery } = require("../validators/analyticsValidators");
 
 const router = express.Router();
 
@@ -93,6 +102,40 @@ router.patch(
 router.post("/:inviteCode/archive", writeLimiter, requireCreator, groupController.archiveGroup);
 router.delete("/:inviteCode", writeLimiter, requireCreator, groupController.deleteGroup);
 
+/* ----------------------------- Entitlement ------------------------------- */
+
+/**
+ * Granting and ending a group's plan by hand (docs/22-MONETIZATION.md §14).
+ *
+ * The only account-gated routes on the group router, and the asymmetry is the
+ * design rather than an oversight: reading a group needs no sign-in and never
+ * will, while *giving* one a paid plan is an operator action and has to be
+ * attributable. `requireAuth` establishes who is asking and `requireAdmin` decides
+ * whether they may — the same pairing that gates the AI spend card, extended
+ * rather than replaced by a role system nobody needs yet.
+ *
+ * There is no matching GET. A group's plan travels on its summary payload, which
+ * every screen already loads; a second endpoint for the same booleans would be a
+ * second thing to go stale.
+ */
+router.post(
+  "/:inviteCode/entitlement",
+  writeLimiter,
+  requireAuth,
+  requireAdmin,
+  validate(grantEntitlementSchema),
+  entitlementController.grant
+);
+
+router.delete(
+  "/:inviteCode/entitlement",
+  writeLimiter,
+  requireAuth,
+  requireAdmin,
+  validate(revokeEntitlementSchema),
+  entitlementController.revoke
+);
+
 /* ------------------------- Derived read models --------------------------- */
 
 router.get("/:inviteCode/balances", balanceController.getBalances);
@@ -107,6 +150,20 @@ router.get(
   "/:inviteCode/activities",
   validate(listActivitiesQuery, "query"),
   activityController.listActivities
+);
+
+/**
+ * Where the money went, by category (docs/16-TODO.md §2.3).
+ *
+ * A plain group read like the ones above it — no `requireMember`, because anyone
+ * holding the link can already see every expense this aggregates. What the group's
+ * plan decides is how far *back* it reaches, and that check lives in the service
+ * where it can run before the query rather than after it.
+ */
+router.get(
+  "/:inviteCode/analytics/categories",
+  validate(categoryBreakdownQuery, "query"),
+  analyticsController.getCategoryBreakdown
 );
 
 /**

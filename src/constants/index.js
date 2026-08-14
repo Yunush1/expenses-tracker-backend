@@ -249,6 +249,173 @@ const BALANCE_STATUS = Object.freeze({
   SETTLED: "SETTLED",
 });
 
+/* ------------------------------ Entitlement ------------------------------- */
+
+/**
+ * What a **group** is on (docs/22-MONETIZATION.md §4–§5).
+ *
+ * Group-scoped, never per-user, and that is the load-bearing decision rather than
+ * a detail of naming: a group is reachable by link with no account, so the only
+ * durable thing to attach money to is the group row itself. A plan keyed on a
+ * device id would be destroyed by clearing site data and shared by copying a
+ * string; a plan keyed on an account would put a signup in front of the people
+ * the network effect depends on (§1.1).
+ *
+ * `FREE` is a real plan with real limits, not an absence — it is what makes the
+ * free allowances in §7 expressible in the same shape as the paid ones. It is also
+ * never *stored*: a group with no entitlement row, and a group whose row has
+ * expired, both resolve to FREE. See models/entitlement.js.
+ *
+ * The two paid plans differ in **term**, not in features (§5's table): Group Pro
+ * renews, a Trip Pass ends by itself. A holiday that lasts eleven days should not
+ * be sold a subscription.
+ */
+const PLANS = Object.freeze({
+  FREE: "FREE",
+  GROUP_PRO: "GROUP_PRO",
+  TRIP_PASS: "TRIP_PASS",
+});
+
+/**
+ * Where a plan is in its life (docs/22-MONETIZATION.md §6).
+ *
+ *   FREE ──▶ TRIAL ──▶ ACTIVE ──▶ PAST_DUE ──▶ EXPIRED ──▶ FREE
+ *                         └──▶ CANCELLED (runs to expiry, then FREE)
+ *
+ * Only four of the six are ever written down. `FREE` is the absence of a live row
+ * and `EXPIRED` is derived from `expiresAt` having passed — storing either would
+ * mean a sweep job whose only purpose is to write a value that can be computed
+ * from a date already in the document, and a group whose plan silently stopped
+ * working because the job did not run.
+ *
+ * `PAST_DUE` and `CANCELLED` both still entitle the group. A failed renewal is a
+ * billing problem to be resolved with the payer, not a reason to take features
+ * away from four other people the same afternoon; and a cancellation that stops
+ * working before the period it was paid for is simply theft.
+ */
+const PLAN_STATUS = Object.freeze({
+  TRIAL: "TRIAL",
+  ACTIVE: "ACTIVE",
+  PAST_DUE: "PAST_DUE",
+  CANCELLED: "CANCELLED",
+  EXPIRED: "EXPIRED",
+  FREE: "FREE",
+});
+
+/** The statuses a stored row may carry. The other two are computed — see above. */
+const STORED_PLAN_STATUS = Object.freeze([
+  PLAN_STATUS.TRIAL,
+  PLAN_STATUS.ACTIVE,
+  PLAN_STATUS.PAST_DUE,
+  PLAN_STATUS.CANCELLED,
+]);
+
+/**
+ * How a group came by its plan (docs/22-MONETIZATION.md §4).
+ *
+ * `PURCHASE` is reserved and unreachable today: payments are a separate phase
+ * (§10), and the whole point of building entitlement first is that a trial, a
+ * promo and a referral payout are expressible without a checkout existing.
+ */
+const GRANT_SOURCES = Object.freeze({
+  ADMIN: "ADMIN",
+  REFERRAL: "REFERRAL",
+  TRIAL: "TRIAL",
+  PROMO: "PROMO",
+  PURCHASE: "PURCHASE",
+});
+
+/**
+ * The things a plan can grant, and **only** those things.
+ *
+ * Read the absences first, because they are the point. Creating a group, joining
+ * by link, adding an expense, splitting it any of the four ways, seeing balances
+ * and settling up are not here and must never be added: they are the reason
+ * somebody invites their flatmates, and §2 says charging for that is the one move
+ * that breaks the product. `tests/entitlement.test.js` asserts this list stays
+ * free of them, so the rule is enforced rather than remembered.
+ *
+ * Every entry is something that does not exist yet (§1.2). That is deliberate —
+ * roughly half of the original proposal's paid tier already ships for free, and
+ * selling it would mean taking it away from people who have it.
+ *
+ * The string values are the wire keys in the `features` block, so they are
+ * camelCase rather than SCREAMING_CASE.
+ */
+const FEATURES = Object.freeze({
+  RECEIPT_SCAN: "receiptScan",
+  RECURRING_EXPENSES: "recurringExpenses",
+  CATEGORY_ANALYTICS: "categoryAnalytics",
+  EXPORT: "export",
+  CURRENCY_CONVERSION: "currencyConversion",
+});
+
+/**
+ * How a feature is bounded, which decides what its limit *means*.
+ *
+ * A single "limit" number would be four different numbers wearing one name: three
+ * receipt scans is a rate, three recurring templates is a population, and three
+ * months of analytics is a horizon. Naming the kind is what lets one policy
+ * function serve all of them without a special case per feature.
+ */
+const FEATURE_KINDS = Object.freeze({
+  /** Consumed per use and reset monthly. Costs money to serve — never unlimited. */
+  METERED: "METERED",
+  /** How many may exist at once. Zero marginal cost, so the cap is generosity. */
+  CAPACITY: "CAPACITY",
+  /** How far back it reaches, in months. `null` means all of it. */
+  DEPTH: "DEPTH",
+  /** On or off, with nothing to count. */
+  FLAG: "FLAG",
+});
+
+/**
+ * Each feature's kind and the key it reports itself under in `limits`.
+ *
+ * The metered ones say `…Left` because what the UI has to render at the wall is
+ * what remains, not what the ceiling was (§8). The others report the ceiling,
+ * because the client can already count the templates it holds and the months it
+ * is asking for.
+ *
+ * `allowanceKey` is where the number itself is read from — `config.entitlement`,
+ * because prices and limits live in data and are configurable per environment
+ * (§5). It is a separate name from the wire key on purpose: config cannot import
+ * this file (that is the cycle config/env → constants → config/env), so the two
+ * vocabularies are joined here, once, rather than by two matching literals in
+ * files that have no way to check each other.
+ */
+const FEATURE_SPECS = Object.freeze({
+  [FEATURES.RECEIPT_SCAN]: {
+    kind: FEATURE_KINDS.METERED,
+    limitKey: "receiptScansLeft",
+    allowanceKey: "receiptScans",
+  },
+  [FEATURES.EXPORT]: {
+    kind: FEATURE_KINDS.METERED,
+    limitKey: "exportsLeft",
+    allowanceKey: "exports",
+  },
+  [FEATURES.RECURRING_EXPENSES]: {
+    kind: FEATURE_KINDS.CAPACITY,
+    limitKey: "recurringExpenses",
+    allowanceKey: "recurringExpenses",
+  },
+  [FEATURES.CATEGORY_ANALYTICS]: {
+    kind: FEATURE_KINDS.DEPTH,
+    limitKey: "analyticsMonths",
+    allowanceKey: "analyticsMonths",
+  },
+  [FEATURES.CURRENCY_CONVERSION]: {
+    kind: FEATURE_KINDS.FLAG,
+    allowanceKey: "currencyConversion",
+  },
+});
+
+/** The metered ones, named once so the "never unlimited" rule has a single list. */
+const METERED_FEATURES = Object.freeze(
+  Object.keys(FEATURE_SPECS).filter((feature) => FEATURE_SPECS[feature].kind === FEATURE_KINDS.METERED)
+);
+
 /* ------------------------------ Expense sheets ---------------------------- */
 
 /**
@@ -736,6 +903,28 @@ const ERROR_CODES = Object.freeze({
   ACCOUNT_ALREADY_IN_GROUP: "ACCOUNT_ALREADY_IN_GROUP",
   VERSION_CONFLICT: "VERSION_CONFLICT",
 
+  /* ----------------------------- Entitlement ----------------------------- */
+
+  /**
+   * The group's plan does not include this feature at all.
+   *
+   * A 403 carrying `details` rather than a bare refusal, because this particular
+   * refusal is a *screen* — the one sales conversation this product gets (§8). The
+   * client needs the group's name, what it has used and what it would get, and it
+   * gets all three here rather than by making a second call after being told no.
+   */
+  FEATURE_LOCKED: "FEATURE_LOCKED",
+  /**
+   * The plan includes it and the allowance for this month is gone.
+   *
+   * Its own code because the sentence is different and so is the remedy: "not on
+   * your plan" versus "that was the last one until the 1st". Conflating them
+   * produces the classic wall that tells a paying customer to upgrade.
+   */
+  FEATURE_LIMIT_REACHED: "FEATURE_LIMIT_REACHED",
+  /** A plan or duration that is not on offer — an operator typo, not a user error. */
+  INVALID_PLAN: "INVALID_PLAN",
+
   /* ---------------------------- Expense sheets --------------------------- */
 
   SHEET_NOT_FOUND: "SHEET_NOT_FOUND",
@@ -798,6 +987,14 @@ module.exports = {
   ACTIVITY_TYPES,
   BALANCE_STATUS,
   JOIN_REQUEST_STATUS,
+  PLANS,
+  PLAN_STATUS,
+  STORED_PLAN_STATUS,
+  GRANT_SOURCES,
+  FEATURES,
+  FEATURE_KINDS,
+  FEATURE_SPECS,
+  METERED_FEATURES,
   SHEET_VISIBILITY,
   SHEET_ROLES,
   SHEET_ROLE_RANK,

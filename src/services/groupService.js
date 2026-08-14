@@ -4,9 +4,16 @@ const groupRepository = require("../repositories/groupRepository");
 const memberRepository = require("../repositories/memberRepository");
 const activityService = require("./activityService");
 const balanceService = require("./balanceService");
+const entitlementService = require("./entitlementService");
 const { generateInviteCode } = require("../utils/inviteCode");
 const { generateJoinCode, normalizeJoinCode, isValidJoinCode } = require("../utils/joinCode");
-const { toGroupDTO, toMemberDTO, toPublicMemberDTO, toBalanceDTO } = require("../serializers");
+const {
+  toGroupDTO,
+  toEntitlementDTO,
+  toMemberDTO,
+  toPublicMemberDTO,
+  toBalanceDTO,
+} = require("../serializers");
 const { ACTIVITY_TYPES, GROUP_STATUS, DEFAULT_CURRENCY, ERROR_CODES, LIMITS } = require("../constants");
 const { ApiError, ConflictError, BadRequestError, NotFoundError } = require("../errors");
 const logger = require("../utils/logger");
@@ -231,15 +238,24 @@ const getPreview = async (group, currentMember) => {
 const getSummary = async (group, currentMember) => {
   const currentMemberId = currentMember?._id ?? null;
 
-  const [members, balanceResult] = await Promise.all([
+  const [members, balanceResult, entitlement] = await Promise.all([
     memberRepository.findByGroup(group._id),
     balanceService.computeBalances(group._id),
+    /**
+     * The plan rides along here rather than on an endpoint of its own
+     * (docs/22-MONETIZATION.md §6). It is read by every screen that could show a
+     * locked feature, and a second round trip for a boolean is a second thing to
+     * be stale — the version where the header says "Pro" and the button beside it
+     * says "upgrade".
+     */
+    entitlementService.forGroup(group._id),
   ]);
 
   const myBalance = balanceService.getMemberBalance(balanceResult, currentMemberId);
 
   return {
     group: toGroupDTO(group),
+    entitlement: toEntitlementDTO(entitlement),
     members: members.map((member) => toMemberDTO(member, currentMemberId)),
     totals: balanceResult.totals,
     currentMember: currentMember ? toMemberDTO(currentMember, currentMemberId) : null,
