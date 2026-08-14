@@ -30,6 +30,11 @@ const cases = [
   // A bill genuinely can be an expense, and an amount is the strongest signal
   // there is that it is one — so the ambiguous word stays behind the add gate.
   ["Create a bill for 500", AI_INTENT.EXPENSE],
+  // Dictated, so the amount arrives as words. A digit-only gate answered these
+  // as questions, which reads as the microphone having failed.
+  ["add four hundred in group expense, me and Rahul", AI_INTENT.EXPENSE],
+  ["log twelve hundred for groceries", AI_INTENT.EXPENSE],
+  ["add two thousand rent", AI_INTENT.EXPENSE],
 
   /* ------------------- a question, which is the default ------------------ */
   ["what did I spend this month", AI_INTENT.FINANCE],
@@ -41,6 +46,10 @@ const cases = [
   // An add verb with no amount is not an expense, and names nothing to build.
   ["add something", AI_INTENT.FINANCE],
   ["", AI_INTENT.FINANCE],
+  // The cost of accepting spoken magnitudes: a number word alone must not be
+  // enough, or every "add one more member" spends a drafting call.
+  ["add one more member to the group", AI_INTENT.FINANCE],
+  ["add a few people", AI_INTENT.FINANCE],
 ];
 
 test("every message routes to exactly one job", () => {

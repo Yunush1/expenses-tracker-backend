@@ -40,6 +40,23 @@ const { resolveExpenseDate } = require("../../utils/parseExpenseDate");
 const ADD_INTENT = /\b(add|log|record|note|put|create)\b/i;
 const QUESTION_SHAPE = /^\s*(what|how much|who|when|why|which|where|do i|did i|am i|is there|show|tell)\b/i;
 const HAS_NUMBER = /\d/;
+/**
+ * A dictated amount, which does not always arrive as digits.
+ *
+ * Speech recognition returns "add four hundred for petrol" as words often enough
+ * that a digit-only gate silently swallows dictated expenses: the message routes
+ * to FINANCE, comes back answered as a question, and the microphone looks broken.
+ * The model itself handles the words perfectly well — it returns `amount: "400"`,
+ * which `AMOUNT` below then validates — so this gate was the only thing in the way.
+ *
+ * A magnitude word is required rather than any number word, and that is the whole
+ * trade-off. "Add four hundred for petrol" gets through; "add one more member"
+ * still does not, because widening far enough to catch a bare "add fifty for chai"
+ * would let every "note down three things" spend a drafting call. Small amounts
+ * are also the ones recognisers reliably return as digits, so the case being given
+ * up is the rare half of a rare problem.
+ */
+const SPOKEN_MAGNITUDE = /\b(hundred|thousand|lakh|lakhs|crore|crores)\b/i;
 
 const looksLikeAdd = (text) => {
   const trimmed = String(text || "").trim();
@@ -47,7 +64,9 @@ const looksLikeAdd = (text) => {
   // "How much did I add last week?" contains "add" and a shape that outranks it.
   if (QUESTION_SHAPE.test(trimmed)) return false;
   if (trimmed.endsWith("?")) return false;
-  return ADD_INTENT.test(trimmed) && HAS_NUMBER.test(trimmed);
+  return (
+    ADD_INTENT.test(trimmed) && (HAS_NUMBER.test(trimmed) || SPOKEN_MAGNITUDE.test(trimmed))
+  );
 };
 
 /** The groups this person can actually write to, with their member lists. */
