@@ -415,12 +415,44 @@ const SHEET_NUMBER_FORMATS = Object.freeze({
 const SHEET_FONTS = Object.freeze([
   "Default",
   "Arial",
-  "Georgia",
-  "Times New Roman",
+  "Arial Black",
+  "Arial Narrow",
+  "Calibri",
+  "Cambria",
+  "Candara",
+  "Comic Sans MS",
   "Courier New",
-  "Verdana",
+  "Georgia",
+  "Helvetica",
+  "Impact",
+  "Inter",
+  "Lucida Console",
+  "Lucida Sans Unicode",
+  "Montserrat",
+  "Nunito",
+  "Open Sans",
+  "Poppins",
+  "Roboto",
+  "Segoe UI",
+  "Tahoma",
+  "Times New Roman",
   "Trebuchet MS",
+  "Ubuntu",
+  "Verdana",
 ]);
+
+/**
+ * Which edges of a cell carry a border, as a subset of `trbl`.
+ *
+ * A string of letters rather than four booleans, for the same reason the format
+ * flags are one letter: BSON stores every key on every document, so `{t:1,b:1}`
+ * costs two keys per cell where `"tb"` costs one. On a 20 000-row bordered table
+ * that difference is the whole feature's storage.
+ *
+ * Order-insensitive and de-duplicated on write, so `"bt"` and `"tb"` are one
+ * value and `"tt"` is not a way to smuggle a longer string past the length check.
+ */
+const SHEET_BORDER_PATTERN = /^[trbl]{0,4}$/;
 
 /**
  * What a sheet is called when nobody has said.
@@ -581,6 +613,7 @@ const LIMITS = Object.freeze({
    * comfortably. Past this the thing being built is a database, not a sheet.
    */
   SHEET_MAX_COLUMNS: 40,
+  MIN_ROWS_SIZE: 30,
   /** One cell. Generous for a note, far short of storing a document in a grid. */
   SHEET_CELL_MAX: 2000,
   SHEET_MAX_SELECT_OPTIONS: 50,
@@ -765,6 +798,7 @@ module.exports = {
   SHEET_TEXT_COLOURS,
   SHEET_FILL_COLOURS,
   SHEET_COLOUR_PATTERN,
+  SHEET_BORDER_PATTERN,
   SHEET_VALIGN,
   SHEET_NUMBER_FORMATS,
   SHEET_FONTS,

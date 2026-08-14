@@ -3,7 +3,9 @@ const AiMessage = require("../../models/aiMessage");
 const { formatMinor } = require("../../utils/money");
 const financeContext = require("./financeContext");
 const expenseDraft = require("./expenseDraft");
-const { suggestFollowUps } = require("./suggestions");
+const { suggestFollowUps, buildStarters } = require("./suggestions");
+const sheetDraft = require("./sheetDraft");
+const intent = require("./intent");
 const pointsService = require("../pointsService");
 const { getRedis, isRedisReady } = require("../../config/redis");
 const config = require("../../config/env");
@@ -221,29 +223,70 @@ const ask = async (user, question, previous = null, asked = []) => {
   }
 
   /**
-   * "Add 1200 for dinner" is a different kind of message from "what did I spend".
+   * What kind of message this is, decided once.
    *
-   * Checked before the context is built, because a draft needs the member roster
-   * rather than the balance snapshot — and building both would pay for a page of
-   * JSON the drafting prompt never reads.
+   * "Add 1200 for dinner", "make me an order slip" and "what did I spend" are
+   * three different jobs, and this is where they part company.
    *
-   * The result is a **proposal**, never a write. See expenseDraft.js for why the
-   * confirmation step is not optional.
+   * `intent.classify` owns the rules and the precedence between them; this only
+   * dispatches. Two drafters can claim a message — "create a 10-question quiz"
+   * reads as an add request on "create" and "10" — and resolving that here, in an
+   * order that happened to work, is how the quiz ended up drafted as an expense.
    */
-  const draft = await expenseDraft.draftExpense(user, trimmed).catch(() => null);
-  if (draft) {
+  const type = intent.classify(trimmed);
+
+  /**
+   * A table to build. Nothing is written: the reply carries a blueprint and the
+   * client asks before creating anything (sheetDraft.js).
+   */
+  const asTable = async () => {
+    const blueprint = await sheetDraft.draftSheet(trimmed).catch(() => null);
+    if (!blueprint) return null;
+
+    const answer = blueprint.note
+      ? `Here's a ${blueprint.title.toLowerCase()} — ${blueprint.note}`
+      : `Here's a ${blueprint.title.toLowerCase()}. Have a look, and create it if it fits.`;
+
+    record(userId, trimmed, answer, false);
+    return { answer, usedContext: false, draft: blueprint };
+  };
+
+  /**
+   * An expense to add — also a proposal, never a write. See expenseDraft.js for
+   * why the confirmation step is not optional.
+   */
+  const asExpense = async () => {
+    const draft = await expenseDraft.draftExpense(user, trimmed).catch(() => null);
+    if (!draft) return null;
+
     const answer = draft.needsGroup
       ? "Which group is that for?"
       : `${draft.description} · ${draft.amount} in ${draft.groupName}. Check it and tap Add.`;
 
     record(userId, trimmed, answer, false);
+    return { answer, usedContext: false, draft };
+  };
 
-    return {
-      answer,
-      usedContext: false,
-      draft,
-      quota: { used: quota.used, limit: quota.limit, paidWithPoints, pointCost: tier.cost },
-    };
+  /**
+   * Both run *before* the finance context is built, because neither reads it —
+   * a template request and an expense draft want the column shapes and the
+   * member roster respectively, and assembling the balance snapshot for them
+   * would be a page of JSON produced and thrown away.
+   *
+   * A drafter that declines falls through to the ordinary answer rather than to
+   * the other one. The classification was already the decision; trying the rest
+   * in turn is what made the precedence unreadable.
+   */
+  const drafter = { [intent.AI_INTENT.SHEET]: asTable, [intent.AI_INTENT.EXPENSE]: asExpense }[type];
+
+  if (drafter) {
+    const drafted = await drafter();
+    if (drafted) {
+      return {
+        ...drafted,
+        quota: { used: quota.used, limit: quota.limit, paidWithPoints, pointCost: tier.cost },
+      };
+    }
   }
 
   const context = await financeContext.build(userId);
@@ -430,7 +473,20 @@ const status = async (user) => {
 const starters = async (userId) => {
   if (!aiProvider.isConfigured()) return { suggestions: [] };
   const context = await financeContext.build(userId);
-  return { suggestions: suggestFollowUps(context, [], 4) };
+
+  /**
+   * Questions about their data first, then things to build.
+   *
+   * The order is the point. Someone with expenses is most likely here to ask
+   * about them, so those lead — but `suggestFollowUps` returns **nothing** when
+   * there is no data, and a brand new account would otherwise open an assistant
+   * with no prompts and no clue what it does. The build prompts need no data, so
+   * they fill that space and are the better first impression: on day one the
+   * honest offer is "I can make you something", not "ask me about the expenses
+   * you have not entered yet".
+   */
+  const questions = suggestFollowUps(context, [], 2);
+  return { suggestions: [...questions, ...buildStarters(4 - questions.length)] };
 };
 
 module.exports = { ask, status, starters, history, clearHistory, SYSTEM_PROMPT };

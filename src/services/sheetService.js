@@ -13,6 +13,7 @@ const {
   ERROR_CODES,
   LIMITS,
   SHEET_ALIGNMENTS,
+  SHEET_BORDER_PATTERN,
   SHEET_COLOUR_PATTERN,
   SHEET_COLUMN_TYPES,
   SHEET_DEFAULT_COLUMNS,
@@ -61,7 +62,7 @@ const withKeys = (columns) =>
     options: column.options || [],
   }));
 
-const createSheet = async (user, { title, description, columns, currency }) => {
+const createSheet = async (user, { title, description, columns, currency, rows }) => {
   const shareCode = await allocateShareCode();
 
   /**
@@ -81,13 +82,36 @@ const createSheet = async (user, { title, description, columns, currency }) => {
   });
 
   /**
-   * A brand new sheet gets three empty rows.
+   * A brand new sheet opens with `LIMITS.MIN_ROWS_SIZE` empty rows.
    *
    * Cheap, and it removes the worst moment in a grid's life: a header with
    * nothing under it, where the only affordance is a button the user has not
-   * looked for yet. Three rows say "type here" without a word of copy.
+   * looked for yet. A screenful of empty rows says "type here" without a word of
+   * copy — which is why every spreadsheet opens on one rather than on a header
+   * and a blank page.
+   *
+   * A sheet created *from* something — Ria's blueprint — puts those values in
+   * the opening rows and pads the rest, so the table starts at row 1. Seeding
+   * here rather than appending afterwards is the whole point: rows added in a
+   * second request land underneath the blanks, and the user opens a template
+   * whose data begins at row 31.
    */
-  await appendRows(sheet, user, [{}, {}, {}]);
+  const seeded = (rows || []).map((values) => ({
+    cells: Object.fromEntries(
+      // Positional: `rows` are arrays lined up with `columns`, because the caller
+      // could not know the generated keys. Extra values past the last column are
+      // dropped rather than written under a key that does not exist.
+      sheet.columns
+        .map((column, index) => [column.key, values[index]])
+        .filter(([, value]) => value !== undefined && value !== null && value !== "")
+    ),
+  }));
+
+  const padding = Math.max(0, LIMITS.MIN_ROWS_SIZE - seeded.length);
+  await appendRows(sheet, user, [
+    ...seeded,
+    ...Array.from({ length: padding }, () => ({})),
+  ]);
 
   return sheet;
 };
@@ -546,6 +570,24 @@ const sanitiseFormats = (formats, sheet) => {
       format.size = Math.round(size);
     }
 
+    /**
+     * Borders: which edges, and in what colour.
+     *
+     * Normalised to unique letters in `trbl` order, so the same four edges are
+     * one stored value however the client spelled them — otherwise `"tb"` and
+     * `"bt"` would compare unequal and the toolbar could not show which option
+     * is active.
+     */
+    if (typeof raw.bd === "string" && SHEET_BORDER_PATTERN.test(raw.bd)) {
+      const edges = [...new Set(raw.bd)].sort(
+        (a, b) => "trbl".indexOf(a) - "trbl".indexOf(b)
+      ).join("");
+      if (edges) format.bd = edges;
+    }
+    if (typeof raw.bdc === "string" && SHEET_COLOUR_PATTERN.test(raw.bdc)) {
+      format.bdc = raw.bdc.toLowerCase();
+    }
+
     // Decimal places. Bounded rather than free, because this drives a
     // `toFixed`-shaped call on the client and a large value is a way to make
     // every collaborator's grid render nonsense.
@@ -582,7 +624,8 @@ const sanitiseCells = (cells, sheet) => {
  * simultaneously get disjoint ranges rather than colliding positions.
  */
 const appendRows = async (sheet, user, rows) => {
-  const count = rows.length;
+  const list = rows ?? Array.from({ length: LIMITS.MIN_ROWS_SIZE }, () => ({}));
+  const count = list.length;
   if (count === 0) return [];
 
   const bumped = await Sheet.findOneAndUpdate(
@@ -598,7 +641,7 @@ const appendRows = async (sheet, user, rows) => {
   // gives the first slot that belongs to us.
   const base = bumped.positionCursor - LIMITS.SHEET_POSITION_STEP * count;
 
-  const docs = rows.map((row, index) => ({
+  const docs = list.map((row, index) => ({
     sheetId: sheet._id,
     position: base + LIMITS.SHEET_POSITION_STEP * (index + 1),
     cells: sanitiseCells(row.cells, sheet),

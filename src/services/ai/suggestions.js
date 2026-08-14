@@ -42,6 +42,59 @@ const tooSimilar = (candidate, asked) => {
 };
 
 /**
+ * Things the assistant can *make*, offered as opening prompts.
+ *
+ * ## Why these exist alongside the data-derived ones
+ *
+ * `suggestFollowUps` returns nothing when there is no data — correct for
+ * questions, since there is nothing to ask about, but it leaves a brand new
+ * account staring at an empty assistant with no idea what it is for. These need
+ * no data by definition: they describe something to build from scratch, so they
+ * work on day one and are the better first impression.
+ *
+ * ## Why they are written as full sentences
+ *
+ * Each one is a message the user could have typed, and tapping it sends exactly
+ * that. A chip reading "Order slip" would have to be expanded into a real
+ * request somewhere, and then the thing the user sent is not the thing they read.
+ * Full sentences also carry a hint of how specific a request may be — "for a
+ * bakery", "with GST" — which is how people learn they can ask for their own.
+ *
+ * Every line here must pass `sheetDraft.looksLikeBuild`, or tapping the chip
+ * would fall through to the finance assistant and answer something else
+ * entirely. The test asserts that.
+ */
+const BUILD_STARTERS = Object.freeze([
+  "Make an order slip for a bakery",
+  "Create a 10-question quiz on general knowledge",
+  "Build a customer feedback form",
+  "Make an attendance register for a class",
+  "Create an invoice template with GST",
+  "Build a monthly budget tracker",
+  "Make a packing checklist for a trip",
+  "Create a delivery log for a courier",
+  "Build a price list for a small shop",
+  "Make a shift roster for a week",
+]);
+
+/**
+ * A rotating handful rather than the same four every time.
+ *
+ * The list is longer than any drawer shows, and a fixed slice would make the
+ * assistant look like it does exactly four things. Rotating is also how someone
+ * discovers the range — the quiz on their second visit teaches more than the
+ * order slip they already saw.
+ */
+const buildStarters = (limit = 3) => {
+  const pool = [...BUILD_STARTERS];
+  const picked = [];
+  while (picked.length < Math.min(limit, pool.length)) {
+    picked.push(...pool.splice(Math.floor(Math.random() * pool.length), 1));
+  }
+  return picked;
+};
+
+/**
  * @param context  the finance snapshot — the same one the model is given
  * @param asked    questions already asked this session, so nothing repeats
  * @param limit    how many to offer; three fits a drawer without becoming a menu
@@ -113,4 +166,4 @@ const suggestFollowUps = (context, asked = [], limit = 3) => {
     .slice(0, limit);
 };
 
-module.exports = { suggestFollowUps };
+module.exports = { suggestFollowUps, buildStarters, BUILD_STARTERS };

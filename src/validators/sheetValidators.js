@@ -5,6 +5,8 @@ const {
   LIMITS,
   SHEET_ALIGNMENTS,
   SHEET_COLUMN_TYPES,
+  SHEET_NUMBER_FORMATS,
+  SHEET_VALIGN,
   SHEET_GRANTABLE_ROLES,
   SHEET_VISIBILITY,
   SHEET_ROLES,
@@ -76,6 +78,24 @@ const createSheetSchema = z.object({
   currency: z.string().trim().length(3).toUpperCase().optional(),
   /** Present only on "duplicate this layout"; a new sheet gets the defaults. */
   columns: z.array(columnInput).max(LIMITS.SHEET_MAX_COLUMNS).optional(),
+  /**
+   * Opening rows, as **arrays of values positional to `columns`** rather than
+   * the usual `{ cells: { <columnKey>: value } }`.
+   *
+   * Column keys are generated server-side, so a client building a sheet from a
+   * template cannot name them: it would have to create the sheet, read the keys
+   * back, and post the rows in a second request — which lands the data *after*
+   * the blank rows a new sheet opens with, leaving the table starting at row 31.
+   * Positional values sidestep that entirely, because the same request carries
+   * the columns they line up with.
+   *
+   * Used by Ria's blueprint card (docs/10-AI-ASSISTANT.md); ordinary creation
+   * sends none.
+   */
+  rows: z
+    .array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()])))
+    .max(LIMITS.SHEET_MAX_BULK_ROWS)
+    .optional(),
 });
 
 const updateSheetSchema = z
@@ -169,9 +189,20 @@ const createRowsSchema = z.object({
 });
 
 /**
- * Per-cell styling. Shape only — the *values* are whitelisted against the fixed
- * palettes in `sheetService.sanitiseFormats`, which is where it matters, because
- * these end up as CSS in other people's browsers.
+ * Per-cell styling. Shape only — the *values* are whitelisted in
+ * `sheetService.sanitiseFormats`, which is where it matters, because these end
+ * up as CSS in other people's browsers.
+ *
+ * **Every field the grid can set must be listed here.** Zod strips keys an
+ * object schema does not mention, so a field added to `sanitiseFormats` and
+ * forgotten here is removed from the request before the service ever sees it —
+ * silently, with a 200 and a response that simply lacks it. That is how number
+ * formats, fonts, vertical alignment and borders all shipped inert: the
+ * service-level tests call `updateRow` directly and never cross this boundary,
+ * so they passed while the actual API dropped the value on the floor.
+ *
+ * The round-trip assertion in `scripts/check-sheets.js` now goes through this
+ * schema for exactly that reason.
  */
 const cellFormat = z.object({
   b: z.boolean().optional(),
@@ -182,6 +213,15 @@ const cellFormat = z.object({
   fg: z.string().max(9).optional(),
   bg: z.string().max(9).optional(),
   align: z.nativeEnum(SHEET_ALIGNMENTS).optional(),
+  valign: z.nativeEnum(SHEET_VALIGN).optional(),
+  /** Number format and its decimal places (§15b). */
+  nf: z.nativeEnum(SHEET_NUMBER_FORMATS).optional(),
+  dp: z.coerce.number().int().min(0).max(LIMITS.SHEET_DECIMALS_MAX).optional(),
+  /** Font family name; the service checks it against SHEET_FONTS. */
+  font: z.string().max(32).optional(),
+  /** Border edges as a subset of `trbl`, and their colour. */
+  bd: z.string().max(4).optional(),
+  bdc: z.string().max(9).optional(),
   size: z.coerce
     .number()
     .int()

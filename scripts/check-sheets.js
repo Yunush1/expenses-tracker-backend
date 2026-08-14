@@ -24,7 +24,9 @@ const SheetRow = require("../src/models/sheetRow");
 const SheetGrant = require("../src/models/sheetGrant");
 const SheetAccessRequest = require("../src/models/sheetAccessRequest");
 const User = require("../src/models/user");
+const { updateRowSchema } = require("../src/validators/sheetValidators");
 const {
+  LIMITS,
   SHEET_ROLES,
   SHEET_VISIBILITY,
   SHEET_ACCESS_SOURCE,
@@ -87,7 +89,14 @@ const refuses = async (label, fn, code) => {
     SHEET_DEFAULT_COLUMNS.map((c) => c.name).join("")
   );
   check("column keys are generated, not names", /^c[0-9a-f]{8}$/.test(sheet.columns[0].key), true);
-  check("starts with three empty rows", await SheetRow.countDocuments({ sheetId: sheet._id }), 3);
+  // Derived from the limit, not spelled out — the opening row count is a tuning
+  // decision, and a literal here turns changing it into a failing assertion in
+  // another file.
+  check(
+    "starts with a screenful of empty rows",
+    await SheetRow.countDocuments({ sheetId: sheet._id }),
+    LIMITS.MIN_ROWS_SIZE
+  );
 
   console.log("\n--- who can open it ---");
   const asOwner = await access.resolveAccess(sheet, owner);
@@ -350,6 +359,43 @@ const refuses = async (label, fn, code) => {
   check("formatting is stored", formatted.formats[columnKey]?.b, true);
   check("and its colour survives", formatted.formats[columnKey]?.fg, "#dc2626");
 
+  /**
+   * The request boundary, not just the service.
+   *
+   * Everything else in this section calls `sheetService.updateRow` directly,
+   * which skips validation entirely — and that is exactly how number formats,
+   * fonts, vertical alignment and borders all shipped inert: `cellFormat` is a
+   * Zod object, Zod strips keys it does not declare, and the fields were removed
+   * from the request before the service ever saw them. The API returned 200 and
+   * a response that quietly lacked them.
+   *
+   * So this asserts the *schema* keeps every field the grid can send. A new
+   * format field is not done until it survives this.
+   */
+  console.log("\n--- every format field survives request validation ---");
+  const sent = {
+    b: true,
+    i: true,
+    u: true,
+    s: true,
+    wrap: true,
+    fg: "#dc2626",
+    bg: "#fef9c3",
+    align: "CENTER",
+    valign: "MIDDLE",
+    nf: "CURRENCY",
+    dp: 2,
+    font: "Georgia",
+    bd: "trbl",
+    bdc: "#334155",
+    size: 14,
+  };
+  const parsed = updateRowSchema.safeParse({ cells: {}, version: 0, formats: { c1: sent } });
+  check("the payload is accepted", parsed.success, true);
+  for (const field of Object.keys(sent)) {
+    check(`  ${field} survives`, parsed.data?.formats?.c1?.[field], sent[field]);
+  }
+
   console.log("\n--- number format, font and vertical alignment ---");
   const presentation = await SheetRow.findById(fmtRow._id);
   const styled = await sheetService.updateRow(shareCode, owner, String(presentation._id), {
@@ -363,6 +409,27 @@ const refuses = async (label, fn, code) => {
   check("with its decimal places", styled.formats[columnKey]?.dp, 2);
   check("a whitelisted font is kept", styled.formats[columnKey]?.font, "Georgia");
   check("vertical alignment is kept", styled.formats[columnKey]?.valign, "MIDDLE");
+
+  const bordered = await SheetRow.findById(fmtRow._id);
+  const withBorder = await sheetService.updateRow(shareCode, owner, String(bordered._id), {
+    cells: {},
+    // Deliberately out of order and duplicated: the same four edges must store as
+    // one value however the client spelled them, or the toolbar cannot tell which
+    // option is currently active.
+    formats: { [columnKey]: { bd: "brtb", bdc: "#DC2626" } },
+    version: bordered.version,
+  });
+  check("border edges are normalised and de-duplicated", withBorder.formats[columnKey]?.bd, "trb");
+  check("border colour is lowercased", withBorder.formats[columnKey]?.bdc, "#dc2626");
+
+  const badBorder = await SheetRow.findById(fmtRow._id);
+  const noBorder = await sheetService.updateRow(shareCode, owner, String(badBorder._id), {
+    cells: {},
+    formats: { [columnKey]: { bd: "xyz", bdc: "red" } },
+    version: badBorder.version,
+  });
+  check("an unknown border edge is dropped", noBorder.formats[columnKey]?.bd, undefined);
+  check("and a non-colour border colour with it", noBorder.formats[columnKey]?.bdc, undefined);
 
   const rejected = await SheetRow.findById(fmtRow._id);
   const cleaned = await sheetService.updateRow(shareCode, owner, String(rejected._id), {
