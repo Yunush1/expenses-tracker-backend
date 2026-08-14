@@ -1,10 +1,10 @@
 const express = require("express");
-const { z } = require("zod");
 
 const aiController = require("../controllers/aiController");
 const requireAuth = require("../middlewares/requireAuth");
 const validate = require("../middlewares/validate");
 const { writeLimiter } = require("../middlewares/rateLimiter");
+const { askSchema } = require("../validators/aiValidators");
 
 const router = express.Router();
 
@@ -36,24 +36,7 @@ router.delete("/history", writeLimiter, aiController.clearHistory);
 router.post(
   "/ask",
   writeLimiter,
-  validate(
-    z.object({
-      question: z.string().trim().min(3).max(500),
-      /**
-       * The immediately preceding exchange, so a follow-up can resolve "that".
-       * Optional and bounded — the client sends at most one turn, and the
-       * service never treats it as a source of facts.
-       */
-      previousQuestion: z.string().trim().max(500).optional(),
-      previousAnswer: z.string().trim().max(2000).optional(),
-      /**
-       * Questions already asked this session, so a follow-up suggestion never
-       * offers back something answered a moment ago. Bounded — these are only
-       * used to filter a list, never sent to the model.
-       */
-      asked: z.array(z.string().trim().max(500)).max(20).optional(),
-    })
-  ),
+  validate(askSchema),
   aiController.ask
 );
 

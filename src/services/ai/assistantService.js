@@ -10,7 +10,7 @@ const pointsService = require("../pointsService");
 const { getRedis, isRedisReady } = require("../../config/redis");
 const config = require("../../config/env");
 const { BadRequestError, ServiceUnavailableError } = require("../../errors");
-const { ERROR_CODES, POINT_EVENT_TYPES, POINTS } = require("../../constants");
+const { ERROR_CODES, LIMITS, POINT_EVENT_TYPES, POINTS } = require("../../constants");
 const logger = require("../../utils/logger");
 const { SYSTEM_PROMPT } = require('./system_promt')
 
@@ -124,8 +124,14 @@ const MAX_QUESTION_LENGTH = 500;
  */
 const ZERO = formatMinor(0);
 
-/** How much of the transcript the drawer restores when it reopens. */
-const HISTORY_PAGE = 30;
+/**
+ * How much of the transcript the drawer restores when it reopens.
+ *
+ * From constants rather than a literal here: the request validator has to accept a
+ * question list this long back from the client, and when the two were independent
+ * numbers they disagreed — see LIMITS.AI_HISTORY_PAGE for what that cost.
+ */
+const HISTORY_PAGE = LIMITS.AI_HISTORY_PAGE;
 
 /**
  * Keep the exchange, without making the answer wait on it.

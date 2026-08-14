@@ -568,6 +568,18 @@ const LIMITS = Object.freeze({
   MAX_PAGE_SIZE: 50,
   /** One receipt's worth of lines. Bounded so a batch stays a single quick write. */
   MAX_BATCH_ITEMS: 20,
+  /**
+   * How many saved assistant exchanges a conversation restores, and therefore how
+   * many the `/ai/ask` request body must be willing to accept back.
+   *
+   * It lives here rather than in the service because **two layers have to agree on
+   * it.** They did not: the service returned 30 exchanges while the request
+   * validator capped the echoed question list at a literal 20, so any conversation
+   * past twenty exchanges failed every subsequent question with
+   * "Array must contain at most 20 element(s)" — permanently, for the people using
+   * the assistant most. One number, read by both, cannot drift apart like that.
+   */
+  AI_HISTORY_PAGE: 30,
   DEFAULT_PAGE_SIZE: 20,
   INVITE_CODE_LENGTH: 16,
   /**
