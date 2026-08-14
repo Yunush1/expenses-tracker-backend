@@ -350,6 +350,45 @@ const refuses = async (label, fn, code) => {
   check("formatting is stored", formatted.formats[columnKey]?.b, true);
   check("and its colour survives", formatted.formats[columnKey]?.fg, "#dc2626");
 
+  console.log("\n--- number format, font and vertical alignment ---");
+  const presentation = await SheetRow.findById(fmtRow._id);
+  const styled = await sheetService.updateRow(shareCode, owner, String(presentation._id), {
+    cells: {},
+    formats: {
+      [columnKey]: { nf: "CURRENCY", dp: 2, font: "Georgia", valign: "MIDDLE" },
+    },
+    version: presentation.version,
+  });
+  check("a number format is stored", styled.formats[columnKey]?.nf, "CURRENCY");
+  check("with its decimal places", styled.formats[columnKey]?.dp, 2);
+  check("a whitelisted font is kept", styled.formats[columnKey]?.font, "Georgia");
+  check("vertical alignment is kept", styled.formats[columnKey]?.valign, "MIDDLE");
+
+  const rejected = await SheetRow.findById(fmtRow._id);
+  const cleaned = await sheetService.updateRow(shareCode, owner, String(rejected._id), {
+    cells: {},
+    formats: {
+      // A font is free text by nature — there is no shape that means "a font and
+      // nothing else" — so the enum is the only boundary, and it must hold.
+      [columnKey]: { font: "Comic Sans; }", nf: "SCIENTIFIC", dp: 99, valign: "SIDEWAYS" },
+    },
+    version: rejected.version,
+  });
+  check("an off-list font is dropped", cleaned.formats[columnKey]?.font, undefined);
+  check("an unknown number format is dropped", cleaned.formats[columnKey]?.nf, undefined);
+  check("out-of-range decimals are dropped", cleaned.formats[columnKey]?.dp, undefined);
+  check("an unknown vertical alignment is dropped", cleaned.formats[columnKey]?.valign, undefined);
+
+  // "Default" means "no choice made", so it must not be stored as a value.
+  const defaulted = await SheetRow.findById(fmtRow._id);
+  const noFont = await sheetService.updateRow(shareCode, owner, String(defaulted._id), {
+    cells: {},
+    formats: { [columnKey]: { font: "Default", b: true } },
+    version: defaulted.version,
+  });
+  check("the default font stores nothing", noFont.formats[columnKey]?.font, undefined);
+  check("while the rest of the format survives", noFont.formats[columnKey]?.b, true);
+
   // The colour check is a security boundary: these values become CSS in other
   // people's browsers. Any #rrggbb is allowed — including one that is on no
   // palette — but the value must be a colour and nothing else.

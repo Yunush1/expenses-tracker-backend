@@ -33,12 +33,11 @@ const initMail = () => {
   if (transport) return transport;
 
   const { host, port, user, pass, secure, from } = config.mail;
-
   if (!host) {
     logger.warn(
       "[mail] SMTP not configured — sheet invitations will not be emailed. " +
-        "Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS and MAIL_FROM to enable them. " +
-        "Sharing still works: the share dialog offers a link to send by hand."
+      "Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS and MAIL_FROM to enable them. " +
+      "Sharing still works: the share dialog offers a link to send by hand."
     );
     return null;
   }
@@ -48,7 +47,7 @@ const initMail = () => {
     // most relays reject the message rather than guessing a sender.
     logger.warn(
       "[mail] SMTP_HOST is set but MAIL_FROM (and SMTP_USER) are empty — " +
-        "most relays reject a message with no sender. Email stays disabled."
+      "most relays reject a message with no sender. Email stays disabled."
     );
     return null;
   }
@@ -96,7 +95,7 @@ const initMail = () => {
       .catch((err) =>
         logger.warn(
           `[mail] SMTP configured but the server did not accept the connection: ${err.message}. ` +
-            "Invitations will still be created; the email may not arrive."
+          "Invitations will still be created; the email may not arrive."
         )
       );
 

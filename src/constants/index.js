@@ -374,6 +374,55 @@ const SHEET_ALIGNMENTS = Object.freeze({
 });
 
 /**
+ * Vertical alignment. Meaningful only once a row can be taller than one line,
+ * which `wrap` makes possible — on a single-line row all three look identical,
+ * which is why this arrived with wrapping rather than before it.
+ */
+const SHEET_VALIGN = Object.freeze({ TOP: "TOP", MIDDLE: "MIDDLE", BOTTOM: "BOTTOM" });
+
+/**
+ * How a cell's value is *displayed*. The stored string is untouched.
+ *
+ * This is the same separation formulas use (§13): the database holds what was
+ * typed, and presentation is applied on the way to the screen. It matters more
+ * here than it looks — a column formatted as currency whose cells had been
+ * rewritten to "₹12,400.00" would break `SUM` over it, and every export would
+ * carry the decoration into whatever consumed it next.
+ *
+ * `PLAIN` is absent by design rather than a member: the default is "no format",
+ * and storing a value meaning "default" on every unformatted cell is exactly the
+ * waste the terse-key note in sanitiseFormats is about.
+ */
+const SHEET_NUMBER_FORMATS = Object.freeze({
+  CURRENCY: "CURRENCY",
+  PERCENT: "PERCENT",
+  NUMBER: "NUMBER",
+});
+
+/**
+ * The font families offered.
+ *
+ * A whitelist for the same reason colours were until recently — this lands in a
+ * `font-family` declaration in other people's browsers — but unlike colours it
+ * stays a fixed list, because a font name is not self-validating the way
+ * `#rrggbb` is. There is no shape that means "a font and nothing else": the
+ * value is free text by nature, so an enum is the only boundary available.
+ *
+ * All web-safe stacks. A sheet is shared, and a font one collaborator has
+ * installed renders as a fallback for everybody else — which looks like a bug in
+ * the app rather than a missing font.
+ */
+const SHEET_FONTS = Object.freeze([
+  "Default",
+  "Arial",
+  "Georgia",
+  "Times New Roman",
+  "Courier New",
+  "Verdana",
+  "Trebuchet MS",
+]);
+
+/**
  * What a sheet is called when nobody has said.
  *
  * Matches the wording every spreadsheet uses, because the string is doing more
@@ -569,6 +618,9 @@ const LIMITS = Object.freeze({
   /** Point size for cell text. Below 8 is unreadable; above 32 breaks the row height. */
   SHEET_FONT_SIZE_MIN: 8,
   SHEET_FONT_SIZE_MAX: 32,
+  /** Decimal places a number format may request. Excel stops at 30; six is plenty
+   * for money and keeps the rendered string a sane width. */
+  SHEET_DECIMALS_MAX: 6,
   /**
    * How long an unanswered access request stays answerable. Far longer than a
    * group's 15 minutes (config.join.requestTtlMinutes): a group join is a live
@@ -713,6 +765,9 @@ module.exports = {
   SHEET_TEXT_COLOURS,
   SHEET_FILL_COLOURS,
   SHEET_COLOUR_PATTERN,
+  SHEET_VALIGN,
+  SHEET_NUMBER_FORMATS,
+  SHEET_FONTS,
   DEFAULT_SHEET_TITLE,
   LIMITS,
   ERROR_CODES,

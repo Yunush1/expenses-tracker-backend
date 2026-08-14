@@ -16,7 +16,10 @@ const {
   SHEET_COLOUR_PATTERN,
   SHEET_COLUMN_TYPES,
   SHEET_DEFAULT_COLUMNS,
+  SHEET_FONTS,
+  SHEET_NUMBER_FORMATS,
   SHEET_ROLES,
+  SHEET_VALIGN,
 } = require("../constants");
 const { BadRequestError, ConflictError, ForbiddenError, NotFoundError } = require("../errors");
 
@@ -525,6 +528,14 @@ const sanitiseFormats = (formats, sheet) => {
       format.bg = raw.bg.toLowerCase();
     }
     if (Object.values(SHEET_ALIGNMENTS).includes(raw.align)) format.align = raw.align;
+    if (Object.values(SHEET_VALIGN).includes(raw.valign)) format.valign = raw.valign;
+    if (Object.values(SHEET_NUMBER_FORMATS).includes(raw.nf)) format.nf = raw.nf;
+
+    // "Default" is the absence of a choice, so it is dropped rather than stored —
+    // the same reason falsy flags above are not kept as `false`.
+    if (typeof raw.font === "string" && raw.font !== "Default" && SHEET_FONTS.includes(raw.font)) {
+      format.font = raw.font;
+    }
 
     const size = Number(raw.size);
     if (
@@ -533,6 +544,14 @@ const sanitiseFormats = (formats, sheet) => {
       size <= LIMITS.SHEET_FONT_SIZE_MAX
     ) {
       format.size = Math.round(size);
+    }
+
+    // Decimal places. Bounded rather than free, because this drives a
+    // `toFixed`-shaped call on the client and a large value is a way to make
+    // every collaborator's grid render nonsense.
+    const decimals = Number(raw.dp);
+    if (Number.isFinite(decimals) && decimals >= 0 && decimals <= LIMITS.SHEET_DECIMALS_MAX) {
+      format.dp = Math.round(decimals);
     }
 
     out[key] = format;
