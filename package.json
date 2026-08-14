@@ -24,7 +24,8 @@
     "date:check": "cross-env NODE_ENV=development node scripts/check-expense-date.js",
     "recovery:check": "cross-env NODE_ENV=development node scripts/check-group-recovery.js",
     "sheets:check": "cross-env NODE_ENV=development node scripts/check-sheets.js",
-    "entitlement:check": "cross-env NODE_ENV=development node scripts/check-entitlement.js"
+    "entitlement:check": "cross-env NODE_ENV=development node scripts/check-entitlement.js",
+    "recurring:check": "cross-env NODE_ENV=development node scripts/check-recurring.js"
   },
   "keywords": [
     "expense",

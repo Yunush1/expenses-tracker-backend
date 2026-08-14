@@ -33,6 +33,22 @@ const SPLIT_VALUE_UNITS = Object.freeze({
   [SPLIT_TYPES.SHARES]: "WEIGHT",
 });
 
+/**
+ * How often a recurring expense fires (docs/16-TODO.md §2.2).
+ *
+ * Three, and no more. `MONTHLY` is the case the feature exists for — rent, wifi,
+ * the maid — and the other two are cheap because they are the same arithmetic.
+ * Deliberately absent: "every 2 weeks", "the last working day", "quarterly".
+ * Each is a real thing somebody wants and each needs its own edge cases, and a
+ * scheduler people cannot predict is worse than one that cannot express their
+ * exact case: they will simply add it by hand, which always works.
+ */
+const RECURRENCE = Object.freeze({
+  DAILY: "DAILY",
+  WEEKLY: "WEEKLY",
+  MONTHLY: "MONTHLY",
+});
+
 const SETTLEMENT_METHODS = Object.freeze({
   MANUAL: "MANUAL",
   // Reserved for the payments phase.
@@ -983,6 +999,7 @@ module.exports = {
   REFERRAL_LEVEL_TYPES,
   SPLIT_TYPES,
   SPLIT_VALUE_UNITS,
+  RECURRENCE,
   SETTLEMENT_METHODS,
   ACTIVITY_TYPES,
   BALANCE_STATUS,

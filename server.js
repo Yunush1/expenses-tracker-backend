@@ -9,6 +9,7 @@ const { initFirebase } = require("./src/config/firebase");
 const { initMail } = require("./src/config/mail");
 const { initRedis, whenRedisSettled, closeRedis } = require("./src/config/redis");
 const { startDailyNudgeJob } = require("./src/jobs/dailyNudgeJob");
+const { startRecurringExpenseJob } = require("./src/jobs/recurringExpenseJob");
 
 logger.info(`[server] Starting in ${config.env} mode`);
 
@@ -37,6 +38,15 @@ const start = async () => {
   // Needs Firebase up to send anything, and the database up to know who to send
   // to — so it starts last. No-ops unless NUDGE_ENABLED=true.
   startDailyNudgeJob();
+
+  /**
+   * Rent, wifi, the maid — materialised on their dates (docs/16-TODO.md §2.2).
+   *
+   * Started unconditionally, unlike the nudge above it: that one has nothing to do
+   * without push configured, while this one has to add the rent whether or not
+   * anybody can be notified about it. Needs only the database.
+   */
+  startRecurringExpenseJob();
 
   /**
    * An explicit http.Server rather than `app.listen()`, because Socket.IO has to

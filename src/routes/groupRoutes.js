@@ -11,6 +11,7 @@ const activityController = require("../controllers/activityController");
 const analyticsController = require("../controllers/analyticsController");
 const memberRoutes = require("./memberRoutes");
 const expenseRoutes = require("./expenseRoutes");
+const recurringExpenseRoutes = require("./recurringExpenseRoutes");
 const settlementRoutes = require("./settlementRoutes");
 
 const validate = require("../middlewares/validate");
@@ -202,6 +203,14 @@ router.post(
 
 router.use("/:inviteCode/members", memberRoutes);
 router.use("/:inviteCode/expenses", expenseRoutes);
+/**
+ * Templates that produce expenses on a schedule (docs/16-TODO.md §2.2).
+ *
+ * A sibling of `/expenses` rather than a path under it, because a template is not
+ * an expense: it has no shares, no date on which money moved, and deleting one
+ * must never be confused with deleting the rows it created.
+ */
+router.use("/:inviteCode/recurring", recurringExpenseRoutes);
 router.use("/:inviteCode/settlements", settlementRoutes);
 
 module.exports = router;
