@@ -1,5 +1,6 @@
 const asyncHandler = require("../middlewares/asyncHandler");
 const assistantService = require("../services/ai/assistantService");
+const aiUsageService = require("../services/ai/aiUsageService");
 const { ok } = require("../utils/apiResponse");
 
 /**
@@ -15,6 +16,16 @@ const { ok } = require("../utils/apiResponse");
 exports.getStatus = asyncHandler(async (req, res) =>
   ok(res, await assistantService.status(req.user))
 );
+
+/**
+ * What the assistant has cost this month, for whoever pays for it.
+ *
+ * Behind `requireAdmin` — it is an operational figure about the deployment, not
+ * about the caller, and it is the one thing in this controller that is not the
+ * requesting account's own data. See middlewares/requireAdmin.js for why the check
+ * is not a comparison in the browser.
+ */
+exports.getUsage = asyncHandler(async (req, res) => ok(res, await aiUsageService.summary()));
 
 /**
  * Starter questions for the empty state. Its own route rather than part of

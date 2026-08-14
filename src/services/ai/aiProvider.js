@@ -1,5 +1,6 @@
 const config = require("../../config/env");
 const logger = require("../../utils/logger");
+const aiUsage = require("./aiUsageService");
 
 /**
  * The only place this app talks to a language model.
@@ -75,6 +76,29 @@ const complete = async ({ system, user, maxTokens = 500, temperature = 0.2 }) =>
     const text = body?.choices?.[0]?.message?.content?.trim();
 
     if (!text) throw new Error("AI returned an empty response");
+
+    /**
+     * Meter the call, here, because this is the only place it can be done once.
+     *
+     * Three services call `complete`, and metering at each of them is how one of
+     * them silently stops counting the moment a fourth is added. This function is
+     * already documented as "the only place this app talks to a language model" —
+     * so it is also the only place that knows a call happened at all.
+     *
+     * Not awaited and never allowed to throw, the same rule as the transcript write
+     * in assistantService.record: the caller has their answer, and failing to file a
+     * meter reading is not a reason to turn a successful reply into an error. The
+     * return type stays a plain string so no caller changes.
+     */
+    aiUsage.record({
+      model: config.ai.model,
+      // `usage` is part of the OpenAI response shape every provider behind this
+      // router implements. Absent on a provider that does not, in which case the
+      // call is still counted and the tokens read zero rather than breaking.
+      promptTokens: body?.usage?.prompt_tokens,
+      completionTokens: body?.usage?.completion_tokens,
+    });
+
     return text;
   } catch (error) {
     if (error.name === "AbortError") throw new Error("AI timed out");

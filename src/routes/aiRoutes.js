@@ -2,6 +2,7 @@ const express = require("express");
 
 const aiController = require("../controllers/aiController");
 const requireAuth = require("../middlewares/requireAuth");
+const requireAdmin = require("../middlewares/requireAdmin");
 const validate = require("../middlewares/validate");
 const { writeLimiter } = require("../middlewares/rateLimiter");
 const { askSchema } = require("../validators/aiValidators");
@@ -23,6 +24,16 @@ const router = express.Router();
 router.use(requireAuth);
 
 router.get("/status", aiController.getStatus);
+
+/**
+ * Spend this month — operator only, and enforced here rather than in the client.
+ *
+ * Declared before the other reads for no reason but readability; the important
+ * thing is `requireAdmin` sitting between `requireAuth` (applied to this router
+ * above) and the handler, so an ordinary signed-in account gets a 403 from the
+ * server and not merely a hidden card.
+ */
+router.get("/usage", requireAdmin, aiController.getUsage);
 
 router.get("/suggestions", aiController.getStarters);
 

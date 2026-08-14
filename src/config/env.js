@@ -322,7 +322,61 @@ const config = Object.freeze({
      * would rather wait than retry a question that already cost them quota.
      */
     timeoutMs: Number(process.env.AI_TIMEOUT_MS ?? 30000),
+
+    /**
+     * What a million tokens costs, so spend can be measured here.
+     *
+     * ## Why this is configured rather than fetched
+     *
+     * The provider is reached through an OpenAI-compatible router, and none of the
+     * hosted providers behind it exposes a dependable "credits remaining" endpoint —
+     * that number lives in a billing dashboard. So the only honest way to answer
+     * "how much is left" inside this app is to meter what we spend and subtract it
+     * from a budget we were told about.
+     *
+     * Token counts are exact: every response carries a `usage` block and
+     * aiProvider records it. **The money is an estimate**, only as good as the two
+     * rates below, and they must be updated when the model or the provider changes.
+     * That is the trade-off for not being tied to one vendor's billing API.
+     *
+     * Zero disables costing while still counting tokens — a sane default, because a
+     * made-up price is worse than no price.
+     */
+    pricePerMTokIn: Number(process.env.AI_PRICE_PER_MTOK_IN ?? 0),
+    pricePerMTokOut: Number(process.env.AI_PRICE_PER_MTOK_OUT ?? 0),
+    /**
+     * The monthly ceiling the usage card counts down from, in the same currency as
+     * the two rates. Zero means "no budget set", and the card reports spend without
+     * pretending to know what is left.
+     */
+    monthlyBudget: Number(process.env.AI_MONTHLY_BUDGET ?? 0),
+    /** Whatever unit the rates are quoted in. Display only — nothing converts. */
+    costCurrency: (process.env.AI_COST_CURRENCY || "USD").trim().toUpperCase(),
   }),
+
+  /**
+   * Accounts allowed to read operational figures — currently the AI spend card.
+   *
+   * ## Why an env list and not a database flag
+   *
+   * There is no admin concept anywhere else in this codebase, and inventing a role
+   * system to show one number would be the larger mistake. An allowlist read from
+   * the environment is the smallest thing that is *actually enforced*: the check
+   * runs in middleware and returns 403, so it does not matter that a browser could
+   * be told to render the card — there would be nothing to put in it.
+   *
+   * A client-side email comparison was the alternative and is not access control:
+   * it ships in the bundle and the endpoint would still answer anyone who called it
+   * directly.
+   *
+   * Compared case-insensitively, because email addresses are.
+   */
+  adminEmails: Object.freeze(
+    (process.env.ADMIN_EMAILS || "")
+      .split(",")
+      .map((email) => email.trim().toLowerCase())
+      .filter(Boolean)
+  ),
 
   /**
    * Referral rewards (docs/12-REFERRALS.md).
