@@ -9,6 +9,7 @@ const balanceController = require("../controllers/balanceController");
 const expenseController = require("../controllers/expenseController");
 const activityController = require("../controllers/activityController");
 const analyticsController = require("../controllers/analyticsController");
+const exportController = require("../controllers/exportController");
 const memberRoutes = require("./memberRoutes");
 const expenseRoutes = require("./expenseRoutes");
 const recurringExpenseRoutes = require("./recurringExpenseRoutes");
@@ -44,7 +45,7 @@ const {
   revokeEntitlementSchema,
 } = require("../validators/entitlementValidators");
 const { listActivitiesQuery } = require("../validators/activityValidators");
-const { categoryBreakdownQuery } = require("../validators/analyticsValidators");
+const { categoryBreakdownQuery, exportQuery } = require("../validators/analyticsValidators");
 
 const router = express.Router();
 
@@ -165,6 +166,25 @@ router.get(
   "/:inviteCode/analytics/categories",
   validate(categoryBreakdownQuery, "query"),
   analyticsController.getCategoryBreakdown
+);
+
+/**
+ * The group's record as a CSV file (docs/22-MONETIZATION.md §14 step 3).
+ *
+ * `requireMember` rather than an open read, unlike the analytics beside it, and
+ * the asymmetry is deliberate: this is a **metered** feature, so an anonymous
+ * visitor holding a link could otherwise drain a group's monthly allowance from a
+ * loop. Everything in the file is already visible to anyone with the link — the
+ * guard is protecting the allowance, not the data.
+ *
+ * `writeLimiter` for the same reason, though the allowance is the real bound.
+ */
+router.get(
+  "/:inviteCode/export",
+  writeLimiter,
+  requireMember,
+  validate(exportQuery, "query"),
+  exportController.exportCsv
 );
 
 /**

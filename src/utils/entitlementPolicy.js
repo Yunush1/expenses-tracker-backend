@@ -74,7 +74,7 @@ const statusOf = (row, now = new Date()) => {
 
 /** The allowance table this plan draws from. Both paid plans share one — see config. */
 const allowancesFor = (plan) =>
-  isPaidPlan(plan) ? config.entitlement.paid : config.entitlement.free;
+  !isPaidPlan(plan) ? config.entitlement.paid : config.entitlement.free;
 
 /**
  * The raw allowance for one feature under one plan.

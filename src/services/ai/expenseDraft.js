@@ -163,6 +163,7 @@ const draftExpense = async (user, message) => {
         `Sentence: ${String(message).trim()}`,
       ].join("\n"),
       maxTokens: 300,
+      feature: "draft",
     });
     parsed = parseJson(raw);
   } catch (err) {

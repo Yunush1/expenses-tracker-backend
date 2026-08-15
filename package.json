@@ -25,7 +25,11 @@
     "recovery:check": "cross-env NODE_ENV=development node scripts/check-group-recovery.js",
     "sheets:check": "cross-env NODE_ENV=development node scripts/check-sheets.js",
     "entitlement:check": "cross-env NODE_ENV=development node scripts/check-entitlement.js",
-    "recurring:check": "cross-env NODE_ENV=development node scripts/check-recurring.js"
+    "recurring:check": "cross-env NODE_ENV=development node scripts/check-recurring.js",
+    "receipt:check": "cross-env NODE_ENV=development node scripts/check-receipt.js",
+    "export:check": "cross-env NODE_ENV=development node scripts/check-export.js",
+    "referral:check": "cross-env NODE_ENV=development node scripts/check-referral-reward.js",
+    "migrate:ai-usage": "cross-env NODE_ENV=development node scripts/migrate-ai-usage.js"
   },
   "keywords": [
     "expense",

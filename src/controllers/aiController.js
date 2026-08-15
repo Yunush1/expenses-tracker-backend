@@ -25,7 +25,15 @@ exports.getStatus = asyncHandler(async (req, res) =>
  * requesting account's own data. See middlewares/requireAdmin.js for why the check
  * is not a comparison in the browser.
  */
-exports.getUsage = asyncHandler(async (req, res) => ok(res, await aiUsageService.summary()));
+/**
+ * `?month=YYYY-MM` reads a past month — which is the point of letting the meter
+ * run for one (docs/22-MONETIZATION.md §14 step 5). Anything malformed falls back
+ * to the current month rather than erroring: this is a dashboard, and a bad query
+ * string should show today's numbers, not a stack trace.
+ */
+exports.getUsage = asyncHandler(async (req, res) =>
+  ok(res, await aiUsageService.summary({ month: req.query.month }))
+);
 
 /**
  * Starter questions for the empty state. Its own route rather than part of

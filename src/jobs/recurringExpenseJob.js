@@ -1,5 +1,6 @@
 const cron = require("node-cron");
 const recurringExpenseService = require("../services/recurringExpenseService");
+const receiptCleanupService = require("../services/receiptCleanupService");
 const logger = require("../utils/logger");
 
 /**
@@ -38,7 +39,27 @@ const tick = async () => {
 
   running = true;
   try {
-    await recurringExpenseService.runDue();
+    /**
+     * Two jobs, one tick, run independently — the same shape as the nudge job,
+     * and for the same reason: `allSettled` means a failure in the sweep cannot
+     * stop somebody's rent being added, and vice versa. They share a schedule,
+     * not a fate.
+     *
+     * The receipt sweep rides here rather than on a cron of its own because it is
+     * one directory listing and one indexed query, which is less work than a
+     * second scheduler is worth — exactly the argument for putting join-request
+     * expiry on the nudge tick.
+     */
+    const results = await Promise.allSettled([
+      recurringExpenseService.runDue(),
+      receiptCleanupService.run(),
+    ]);
+
+    for (const result of results) {
+      if (result.status === "rejected") {
+        logger.error(`[recurring] Tick task failed: ${result.reason?.stack || result.reason}`);
+      }
+    }
   } catch (error) {
     // A scheduled job must never throw into the timer: an unhandled rejection here
     // takes the process down under server.js's own handler.
@@ -50,7 +71,9 @@ const tick = async () => {
 
 const startRecurringExpenseJob = () => {
   const task = cron.schedule(EXPRESSION, tick);
-  logger.info("[recurring] Scheduler on — due templates are materialised hourly");
+  logger.info(
+    "[recurring] Scheduler on — due templates are materialised hourly, unused receipt photos swept"
+  );
   return task;
 };
 

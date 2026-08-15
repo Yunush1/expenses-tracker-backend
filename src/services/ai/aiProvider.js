@@ -41,6 +41,16 @@ const complete = async ({
    * useful way available — a confident, invented answer.
    */
   model = config.ai.model,
+  /**
+   * Which capability is spending — `ask`, `draft`, `receipt`, `suggestions`.
+   *
+   * Recorded on the meter so cost is answerable per feature rather than only per
+   * model, which is what a per-use price has to be set from
+   * (docs/22-MONETIZATION.md §1.4). Defaulting to `unknown` rather than being
+   * required, because a caller that forgets should under-label a number, not fail
+   * a user's request.
+   */
+  feature = "unknown",
 } = {}) => {
   if (!isConfigured()) throw new Error("AI is not configured");
 
@@ -140,6 +150,7 @@ const complete = async ({
       // exactly the number this feature has to be judged on. `aiUsage` keys its
       // buckets on `{ day, model }`, so this separates them with no other change.
       model,
+      feature,
       // `usage` is part of the OpenAI response shape every provider behind this
       // router implements. Absent on a provider that does not, in which case the
       // call is still counted and the tokens read zero rather than breaking.

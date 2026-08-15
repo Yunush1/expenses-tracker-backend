@@ -4,6 +4,7 @@ const mongoose = require("mongoose");
 const User = require("../models/user");
 const PointEvent = require("../models/pointEvent");
 const pointsService = require("./pointsService");
+const referralRewardService = require("./referralRewardService");
 const config = require("../config/env");
 const { POINT_EVENT_TYPES, REFERRAL_LEVEL_TYPES } = require("../constants");
 const logger = require("../utils/logger");
@@ -185,6 +186,15 @@ const qualify = async (userId) => {
     const seen = new Set([String(qualified._id)]);
     let current = qualified.referredBy;
     const awarded = [];
+    /**
+     * The direct referrer, kept aside for the plan-days payout below.
+     *
+     * Level one only, and the loop below is why the distinction is easy to miss:
+     * points are divisible and pay the whole upline by percentage, while days are
+     * chunky and pay the person who actually made the invite. See
+     * referralRewardService.
+     */
+    const directReferrer = qualified.referredBy;
 
     for (let level = 0; level < REFERRAL_LEVEL_TYPES.length && current; level += 1) {
       const key = String(current);
@@ -210,7 +220,26 @@ const qualify = async (userId) => {
       logger.info(`[referral] Qualified user paid ${awarded.length} level(s) of upline`);
     }
 
-    return awarded;
+    /**
+     * The second payout: days of Group Pro on a group the referrer is in
+     * (docs/22-MONETIZATION.md §11).
+     *
+     * Inside the `referralQualifiedAt` latch, which is what makes it exactly-once
+     * without a dedupe key of its own — the same guarantee the points award gets
+     * from `key: "subject"`, arrived at by a different route.
+     *
+     * Awaited rather than fired off, so a failure is logged against this
+     * qualification rather than surfacing later with no context. It cannot throw:
+     * see grantForReferral.
+     */
+    const planDays = directReferrer
+      ? await referralRewardService.grantForReferral(
+          await User.findById(directReferrer).select("_id deviceIds").lean(),
+          { referredUserId: String(qualified._id) }
+        )
+      : null;
+
+    return { levels: awarded, planDays };
   } catch (err) {
     logger.warn(`[referral] Qualification failed: ${err.message}`);
     return null;
@@ -272,6 +301,22 @@ const stats = async (user) => {
     basePoints: config.referral.basePoints,
     joinBonus: config.referral.joinBonus,
     dailyCap: config.referral.dailyCap,
+    /**
+     * The second half of a referral: days of Group Pro on one of your groups
+     * (docs/22-MONETIZATION.md §11).
+     *
+     * Both numbers are here because the promise is conditional and the condition
+     * has to be visible *before* somebody earns nothing. Days say what is on
+     * offer; `planDaysNeedsActiveGroup` says the group has to be one two people
+     * are actually using — which is the guard that stops "create a group, invite
+     * yourself, collect", and the sentence that answers "my friend joined, where
+     * are my days?".
+     *
+     * Zero days means the payout is switched off, and the UI should say nothing
+     * about it rather than promising nothing.
+     */
+    planDays: referralRewardService.daysPerReferral(),
+    planDaysNeedsActiveGroup: true,
   };
 };
 

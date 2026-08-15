@@ -7,3 +7,9 @@ logs/
 .env.example
 *.log
 .DS_Store
+# Scanned receipt photos (docs/10-AI-ASSISTANT.md §4.2).
+#
+# User content, not source. The filenames are 128 random bits and the whole point
+# of them is that they are unguessable — committing a directory of other people's
+# receipts to a repository would defeat that in the most permanent way available.
+public/receipts/

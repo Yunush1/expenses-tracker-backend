@@ -317,6 +317,72 @@ const categoryTotals = (groupId, { from, to, memberId } = {}) => {
   return Expense.aggregate(stages);
 };
 
+/**
+ * Every live expense in a range, oldest first — the export's query.
+ *
+ * Deliberately **not** paginated, unlike `listByGroup`. An export is one file and
+ * a partial one is worse than none: a spreadsheet whose totals silently stop at
+ * page one is a wrong answer that looks like a right one. The bound is the group
+ * itself — a flatshare running for years is thousands of rows, not millions — and
+ * the index on `{ groupId, isDeleted, expenseDate }` serves it directly.
+ *
+ * Oldest first because that is how a ledger reads and how a spreadsheet's running
+ * total is built, which is the opposite of the screen's newest-first.
+ */
+const listAllByGroup = (groupId, { from, to } = {}) => {
+  const filter = { groupId, isDeleted: false };
+
+  // Whole days, matching listByGroup — see the note there.
+  const range = {};
+  if (from) {
+    const start = new Date(from);
+    start.setUTCHours(0, 0, 0, 0);
+    range.$gte = start;
+  }
+  if (to) {
+    const end = new Date(to);
+    end.setUTCHours(23, 59, 59, 999);
+    range.$lte = end;
+  }
+  if (Object.keys(range).length > 0) filter.expenseDate = range;
+
+  return Expense.find(filter).sort({ expenseDate: 1, _id: 1 }).lean();
+};
+
+/**
+ * Which of these groups are **activated** — two or more members have paid for
+ * something.
+ *
+ * ## Why two payers, and not two members or one expense
+ *
+ * This is docs/22-MONETIZATION.md §12's definition, and it is the one that
+ * resists being farmed. A group with five members and one payer is one person
+ * with a spreadsheet; a group with one expense is a group somebody opened. Two
+ * distinct people having each put money in is the smallest fact that cannot be
+ * produced by a single person in an afternoon, which is exactly what a referral
+ * payout has to be attached to (§11).
+ *
+ * Deleted expenses do not count, or the farm is "add two, delete two".
+ *
+ * Takes a list and returns a list, because the caller is checking every group one
+ * person belongs to and a query per group would be a loop over the database on a
+ * path triggered by somebody else's first expense.
+ */
+const activatedGroupIds = async (groupIds = []) => {
+  const ids = groupIds.map((id) => new mongoose.Types.ObjectId(String(id)));
+  if (ids.length === 0) return [];
+
+  const rows = await Expense.aggregate([
+    { $match: { groupId: { $in: ids }, isDeleted: false } },
+    // One row per (group, payer) — distinct payers, without loading any expense.
+    { $group: { _id: { groupId: "$groupId", paidBy: "$paidBy" } } },
+    { $group: { _id: "$_id.groupId", payers: { $sum: 1 } } },
+    { $match: { payers: { $gte: 2 } } },
+  ]);
+
+  return rows.map((row) => String(row._id));
+};
+
 const deleteByGroup = (groupId, session = null) => Expense.deleteMany({ groupId }, { session });
 
 module.exports = {
@@ -333,5 +399,7 @@ module.exports = {
   aggregateTotals,
   periods,
   categoryTotals,
+  listAllByGroup,
+  activatedGroupIds,
   deleteByGroup,
 };

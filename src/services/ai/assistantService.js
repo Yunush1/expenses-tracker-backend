@@ -409,6 +409,9 @@ const ask = async (user, question, previous = null, asked = []) => {
       system: SYSTEM_PROMPT,
       user: userMessage,
       maxTokens: 400,
+      // The headline feature, and the one a quota is counted against — so it is
+      // the number a Pro tier's AI allowance would be priced from.
+      feature: "ask",
     });
 
     record(userId, trimmed, answer, true);

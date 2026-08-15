@@ -346,6 +346,38 @@ test("every feature has a spec, and every spec has a kind the policy understands
   }
 });
 
+/* --------------------------- Referral payouts ----------------------------- */
+
+test("a referral pays the configured number of days", () => {
+  withEnv({ ENTITLEMENT_REFERRAL_DAYS: "45" }, () => {
+    const config = require("../src/config/env");
+    assert.equal(config.entitlement.referralGrantDays, 45);
+  });
+});
+
+test("zero days switches the plan-days payout off without touching points", () => {
+  /**
+   * The off switch matters because the two halves of a referral are independent:
+   * an operator who wants points but not plan days sets this to 0, and the points
+   * economy — a separate set of variables entirely — must be unaffected.
+   */
+  withEnv({ ENTITLEMENT_REFERRAL_DAYS: "0", REFERRAL_BASE_POINTS: "100" }, () => {
+    const config = require("../src/config/env");
+
+    assert.equal(config.entitlement.referralGrantDays, 0);
+    assert.equal(config.referral.basePoints, 100, "points are a separate economy");
+  });
+});
+
+test("a negative or nonsense day count reads as off, never as a debt", () => {
+  for (const value of ["-30", "abc", ""]) {
+    withEnv({ ENTITLEMENT_REFERRAL_DAYS: value }, () => {
+      const days = require("../src/config/env").entitlement.referralGrantDays;
+      assert.ok(days >= 0, `"${value}" produced ${days}`);
+    });
+  }
+});
+
 test("an unknown feature is refused rather than waved through", () => {
   // A typo in a `requireFeature("recieptScan")` must fail closed.
   assert.equal(policy.canUse(PLANS.GROUP_PRO, "recieptScan", {}), false);

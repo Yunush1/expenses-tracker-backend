@@ -149,6 +149,14 @@ const toExpenseDTO = (expense, memberNameById = new Map(), currency = "INR") => 
     expenseDate: expense.expenseDate,
     notes: expense.notes || "",
     category: expense.category,
+    /**
+     * The receipt this was read off, when it came from a scan.
+     *
+     * A list of URLs on this server and nothing else — the write path only accepts
+     * paths it produced itself, so this can be rendered directly without a client
+     * having to wonder whether the string is a link to somewhere hostile.
+     */
+    attachments: expense.attachments || [],
     createdBy: {
       id: id(expense.createdByMemberId),
       name: nameOf(expense.createdByMemberId),

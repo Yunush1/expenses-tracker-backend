@@ -78,9 +78,33 @@ const updateExpenseSchema = z.object({
  * The payer and date are stated once because that is what makes the entry quick;
  * everything else is per item, so each line can be split differently.
  */
+/**
+ * A stored receipt photo, by URL.
+ *
+ * Deliberately **not** free text and not a URL of the caller's choosing: it must
+ * match a path this server itself produced (`utils/receiptStorage`), 32 hex
+ * characters and one of three extensions. Accepting an arbitrary string here would
+ * let anyone point an expense at any URL on the internet, and every member of the
+ * group would then load it — an image beacon in somebody else's ledger.
+ *
+ * A single-element array rather than a scalar because `attachments[]` on the model
+ * is a list and always has been (docs/02-HLD.md §9); one per expense is simply
+ * what a receipt scan produces.
+ */
+const attachments = z
+  .array(z.string().regex(/^\/uploads\/receipts\/[a-f0-9]{32}\.(?:jpg|png|webp)$/))
+  .max(1)
+  .optional();
+
 const createExpenseBatchSchema = z.object({
   paidBy: objectId,
   expenseDate,
+  /**
+   * Stated once for the whole batch, like the payer and the date: every line came
+   * off the same piece of paper, and asking per line would be asking eleven times
+   * for one answer.
+   */
+  attachments,
   items: z
     .array(
       z.object({

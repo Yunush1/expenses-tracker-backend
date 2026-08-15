@@ -88,6 +88,25 @@ const refusalDetails = (feature, snapshot, group) => ({
  * open: running out of receipt scans must never stop an expense being added by
  * hand. The wall is around the shortcut, never around the ledger.
  */
+/**
+ * What still works when a feature runs out, per feature.
+ *
+ * §8's first rule is that a wall must never block the core — so a refusal names
+ * the thing the person can still do. That sentence is different for each feature
+ * and is the easiest part to get wrong: telling somebody who ran out of *exports*
+ * that "adding it by hand always works" is nonsense, and nonsense at the exact
+ * moment they are deciding whether this product is worth paying for.
+ *
+ * Absent means there is no alternative worth naming, and the message simply does
+ * not claim one.
+ */
+const STILL_WORKS = Object.freeze({
+  [FEATURES.RECEIPT_SCAN]: "Adding the expense by hand works as always",
+  [FEATURES.EXPORT]: "Every expense is still here to read and search",
+  [FEATURES.RECURRING_EXPENSES]: "Adding these by hand each month works as always",
+  [FEATURES.CATEGORY_ANALYTICS]: "This month is always free to look at",
+});
+
 const assertAllowed = (snapshot, feature, group = null) => {
   if (policy.canUse(snapshot.plan, feature, snapshot.usage || {})) return;
 
@@ -99,15 +118,20 @@ const assertAllowed = (snapshot, feature, group = null) => {
   const error =
     metered && inPlan
       ? new ForbiddenError(
-          `That's the last one${groupName} this month. Adding it by hand always works — ` +
-            "or upgrade the group, which covers everyone in it.",
-          ERROR_CODES.FEATURE_LIMIT_REACHED
-        )
+        [
+          `That's the last one${groupName} this month.`,
+          STILL_WORKS[feature],
+          "Upgrading the group covers everyone in it.",
+        ]
+          .filter(Boolean)
+          .join(" "),
+        ERROR_CODES.FEATURE_LIMIT_REACHED
+      )
       : new ForbiddenError(
-          `This isn't included in ${groupName ? `${group.name}'s` : "this group's"} current plan. ` +
-            "Upgrading covers everyone in the group.",
-          ERROR_CODES.FEATURE_LOCKED
-        );
+        `This isn't included in ${groupName ? `${group.name}'s` : "this group's"} current plan. ` +
+        "Upgrading covers everyone in the group.",
+        ERROR_CODES.FEATURE_LOCKED
+      );
 
   error.details = refusalDetails(feature, snapshot, group);
   throw error;
@@ -156,7 +180,7 @@ const assertCapacity = (snapshot, feature, current, group = null) => {
     limit === 0
       ? "This isn't included in the group's current plan. Upgrading covers everyone in the group."
       : `That's the ${limit === 1 ? "one" : limit} this group's plan allows. Remove one to add another, ` +
-        "or upgrade the group — it covers everyone in it.",
+      "or upgrade the group — it covers everyone in it.",
     limit === 0 ? ERROR_CODES.FEATURE_LOCKED : ERROR_CODES.FEATURE_LIMIT_REACHED
   );
 
@@ -203,7 +227,7 @@ const consume = async (group, feature, count = 1, now = new Date()) => {
      */
     const fresh = await forGroup(group._id, now);
     const error = new ForbiddenError(
-      "That was the last one this month. Adding it by hand always works.",
+      ["That was the last one this month.", STILL_WORKS[feature]].filter(Boolean).join(" "),
       ERROR_CODES.FEATURE_LIMIT_REACHED
     );
     error.details = refusalDetails(feature, fresh, group);

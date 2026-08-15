@@ -8,6 +8,7 @@ const deviceContext = require("./middlewares/deviceContext");
 const errorMiddleware = require("./middlewares/error.middleware");
 const { globalLimiter } = require("./middlewares/rateLimiter");
 const { ERROR_CODES } = require("./constants");
+const receiptStorage = require("./utils/receiptStorage");
 const logger = require("./utils/logger");
 
 const app = express();
@@ -88,6 +89,39 @@ app.use((req, res, next) => {
 app.use(corsMiddleware);
 
 /**
+ * Scanned receipt photos, served without a login.
+ *
+ * They have to be: every member of a group can see the expense a photo belongs to,
+ * and most members have no account at all. So the **filename is the credential** —
+ * 128 random bits, exactly like an invite code — and this mount is deliberately
+ * thin about everything else.
+ *
+ * `index: false` and `redirect: false` together are what stop the directory being
+ * browsable, which is the difference between "a public folder" and "an archive of
+ * other people's receipts". The `X-Robots-Tag` and `Referrer-Policy` headers set
+ * above apply here too, so a URL cannot leak into a search index or a third
+ * party's referrer log.
+ *
+ * A year of caching because the name is a content address in practice: files are
+ * never rewritten, only created and eventually swept, so a URL that resolves once
+ * resolves to the same bytes forever.
+ */
+if (config.receipts.enabled) {
+  app.use(
+    receiptStorage.URL_PREFIX,
+    express.static(receiptStorage.storageDir(), {
+      index: false,
+      redirect: false,
+      immutable: true,
+      maxAge: "365d",
+      // Nothing here is ever an executable or a page; a browser that decides
+      // otherwise about an uploaded file is the classic stored-XSS route.
+      setHeaders: (res) => res.setHeader("X-Content-Type-Options", "nosniff"),
+    })
+  );
+}
+
+/**
  * Sheets get a larger body than everything else, and get it **first**.
  *
  * Pasting a block out of Excel is the whole point of the grid, and a few hundred
@@ -105,6 +139,26 @@ app.use(corsMiddleware);
  * together, and 500 rows of ordinary data sits comfortably inside 1mb.
  */
 app.use("/api/sheets", express.json({ limit: "1mb" }));
+
+/**
+ * The one route that carries a photograph, and nothing else does.
+ *
+ * A base64 data URL inflates the image by a third, so the 4 MB cap in
+ * `AI_MAX_IMAGE_BYTES` needs roughly 5.4 MB of body — 6 MB gives it room without
+ * pretending to be exact. The two are set together: raising one without the other
+ * shows up as an upload failing at a size nobody wrote down, which is precisely
+ * the trap the sheets note above describes.
+ *
+ * Scoped to the single path rather than to `/api/groups`, because the rest of that
+ * router is unauthenticated and readable by anyone holding a link — handing all of
+ * it a six-megabyte buffer to be flooded with would be a much larger change than
+ * the feature asked for. This path is behind `requireMember`, an active group, a
+ * rate limiter and a metered allowance.
+ *
+ * Express matches this before the global parser below, and whichever runs first
+ * consumes the stream — so the order of these two lines is the whole mechanism.
+ */
+app.use(/^\/api\/groups\/[^/]+\/expenses\/scan-receipt$/, express.json({ limit: "6mb" }));
 
 app.use(express.json({ limit: "64kb" }));
 app.use(express.urlencoded({ extended: true }));

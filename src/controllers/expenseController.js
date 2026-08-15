@@ -1,5 +1,6 @@
 const asyncHandler = require("../middlewares/asyncHandler");
 const expenseService = require("../services/expenseService");
+const receiptService = require("../services/receiptService");
 const { ok, created } = require("../utils/apiResponse");
 
 exports.listExpenses = asyncHandler(async (req, res) => {
@@ -39,6 +40,23 @@ exports.createExpenseBatch = asyncHandler(async (req, res) => {
   });
 
   return created(res, result, `${result.created} item(s) added`);
+});
+
+/**
+ * A photograph → line items to confirm (docs/10-AI-ASSISTANT.md §4.2).
+ *
+ * 200 even when the photo was not a receipt: the request succeeded, the model
+ * answered, and `isReceipt: false` is that answer. A 4xx there would tell the
+ * client something was wrong with its request when nothing was.
+ */
+exports.scanReceipt = asyncHandler(async (req, res) => {
+  const data = await receiptService.scan({ group: req.group, image: req.body.image });
+
+  return ok(
+    res,
+    data,
+    data.isReceipt ? "Receipt read — check the lines before adding" : "That doesn't look like a receipt"
+  );
 });
 
 exports.updateExpense = asyncHandler(async (req, res) => {

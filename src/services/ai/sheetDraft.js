@@ -206,6 +206,7 @@ const draftSheet = async (message) => {
        * request for a quiz comes back with the same four columns.
        */
       temperature: 0.5,
+      feature: "sheet",
     });
     parsed = parseJson(raw);
   } catch {

@@ -242,6 +242,15 @@ const createExpenseBatch = async ({ group, actor, dto }) => {
         splitValues,
         expenseDate: date,
         notes: item.notes || "",
+        /**
+         * The receipt these lines were read off, on every one of them.
+         *
+         * Copied rather than shared, because each line is a separate expense that
+         * can be edited, moved or deleted on its own — and the person looking at
+         * the odd one out six weeks later is exactly who needs the photograph. The
+         * field has been reserved for this since docs/02-HLD.md §9.
+         */
+        attachments: dto.attachments || [],
         createdByMemberId: actor._id,
         clientRequestId: item.clientRequestId || null,
         version: 0,

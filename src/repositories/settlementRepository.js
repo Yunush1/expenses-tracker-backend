@@ -64,12 +64,38 @@ const aggregateTotals = (groupId) =>
     },
   ]);
 
+/**
+ * Every settlement in a range, oldest first — the export's query.
+ *
+ * Unpaginated for the same reason as the expense one: an export is a file, and a
+ * partial file is a wrong total that looks like a right one.
+ */
+const listAllByGroup = (groupId, { from, to } = {}) => {
+  const filter = { groupId };
+
+  const range = {};
+  if (from) {
+    const start = new Date(from);
+    start.setUTCHours(0, 0, 0, 0);
+    range.$gte = start;
+  }
+  if (to) {
+    const end = new Date(to);
+    end.setUTCHours(23, 59, 59, 999);
+    range.$lte = end;
+  }
+  if (Object.keys(range).length > 0) filter.settledAt = range;
+
+  return Settlement.find(filter).sort({ settledAt: 1, _id: 1 }).lean();
+};
+
 const deleteByGroup = (groupId, session = null) => Settlement.deleteMany({ groupId }, { session });
 
 module.exports = {
   create,
   findByClientRequestId,
   listByGroup,
+  listAllByGroup,
   countByGroup,
   countInvolvingMember,
   listAllInvolvingMember,

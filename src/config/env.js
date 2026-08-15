@@ -275,8 +275,24 @@ const entitlementConfig = (() => {
     defaultGrantDays: Math.max(1, Number(process.env.ENTITLEMENT_DEFAULT_GRANT_DAYS ?? 30)),
     /** The ceiling on any single grant, so a fat finger cannot gift a decade. */
     maxGrantDays: Math.max(1, Number(process.env.ENTITLEMENT_MAX_GRANT_DAYS ?? 3650)),
-    /** What a referral payout is worth in days of Group Pro (§11). */
-    referralGrantDays: Math.max(0, Number(process.env.ENTITLEMENT_REFERRAL_DAYS ?? 30)),
+    /**
+     * What a referral payout is worth in days of Group Pro (§11). `0` switches
+     * the plan-days half off, leaving the points half untouched.
+     *
+     * Parsed through `meteredAllowance` rather than by hand, and the reason is a
+     * bug this used to have: `Math.max(0, Number("abc"))` is **NaN**, not zero —
+     * so a typo in this variable produced a grant whose `expiresAt` was an Invalid
+     * Date. A plan that neither works nor expires is the worst of both, and it
+     * would have been discovered by a user rather than by an operator.
+     *
+     * An unusable value now falls back to the default, matching how
+     * `REFERRAL_LEVEL_PERCENTS` treats one: a typo must not silently switch
+     * referrals off either.
+     */
+    referralGrantDays: meteredAllowance(
+      String(process.env.ENTITLEMENT_REFERRAL_DAYS ?? "").trim() || undefined,
+      30
+    ),
   });
 })();
 
@@ -584,6 +600,52 @@ const config = Object.freeze({
    * Resolved above as `entitlementConfig`.
    */
   entitlement: entitlementConfig,
+
+  /**
+   * Keeping the scanned receipt photo (docs/10-AI-ASSISTANT.md §4.2).
+   *
+   * ## The trade being made, said out loud
+   *
+   * Storing the image gives a group something genuinely useful: the paper next to
+   * the numbers, so a disputed line can be checked months later without anybody
+   * still having the receipt. It also creates the thing the privacy note in
+   * docs/10 §8 warns about — a photograph of where somebody was, at a time, with a
+   * card, now living on a server that serves it without a login.
+   *
+   * Three properties make that survivable, and all three are load-bearing:
+   *
+   * 1. **The filename is 128 random bits**, so the URL is a capability exactly like
+   *    an invite link, and the directory cannot be walked (utils/receiptStorage).
+   * 2. **It is `noindex`, `no-referrer` and never linked from a public page**, so
+   *    the URL does not leak into a search engine or a third party's logs.
+   * 3. **Unreferenced photos are swept**, so an abandoned scan does not sit on a
+   *    disk indefinitely.
+   *
+   * On by default because the feature is worth little without it — a scan you
+   * cannot check against the paper is just typing somebody else did — and
+   * switchable off in one variable for a deployment that would rather not hold
+   * them at all. Off, everything still works: the scan reads, the lines appear,
+   * and no file is written.
+   */
+  receipts: Object.freeze({
+    enabled: (process.env.RECEIPT_STORE_ENABLED ?? "true").toLowerCase() !== "false",
+    /**
+     * Relative to the working directory, and served statically from
+     * `/uploads/receipts`. A path rather than a bucket because this is a small
+     * self-hosted app; the day it needs object storage, this is the one function to
+     * change (`receiptStorage.save`).
+     */
+    dir: (process.env.RECEIPT_STORE_DIR || "public/receipts").trim(),
+    /**
+     * How long an **unreferenced** photo survives.
+     *
+     * Only reaches abandoned scans — one taken, looked at, and never added to
+     * anything. A photo attached to a real expense is part of that expense and is
+     * never swept, however old: deleting it would remove evidence from a record
+     * people settle money on.
+     */
+    retentionMs: Math.max(1, Number(process.env.RECEIPT_RETENTION_DAYS ?? 2)) * 24 * 60 * 60 * 1000,
+  }),
 
   join: Object.freeze({
     /**

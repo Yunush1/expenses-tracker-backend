@@ -36,6 +36,28 @@ const aiUsageSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    /**
+     * Which capability spent this — `ask`, `draft`, `receipt`, `suggestions`.
+     *
+     * ## Why the model is not enough
+     *
+     * Pricing needs "what does one receipt scan cost" and "what does one Ria
+     * question cost" as separate numbers (docs/22-MONETIZATION.md §1.4). Receipt
+     * scanning separates itself, because it runs on a different model — but Ria's
+     * answers, her expense drafts and her starter suggestions all share the text
+     * model, so a per-model total blends three features with very different
+     * shapes and volumes. A tier priced off that blend would be priced off an
+     * average nobody is.
+     *
+     * Rows written before this field existed read as `unknown`, which is honest
+     * and needs no backfill: their tokens are still counted, they simply cannot
+     * say which feature spent them.
+     */
+    feature: {
+      type: String,
+      required: true,
+      default: "unknown",
+    },
     calls: {
       type: Number,
       default: 0,
@@ -57,7 +79,16 @@ const aiUsageSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// One bucket per day per model, and the upsert depends on it being unique.
-aiUsageSchema.index({ day: 1, model: 1 }, { unique: true });
+/**
+ * One bucket per day per model per feature, and the upsert depends on it being
+ * unique.
+ *
+ * Widening this index is a migration in the mildest sense: the old two-field
+ * unique index has to go, or the first two features to run on one model on one day
+ * will collide on it. `scripts/migrate-ai-usage.js` drops it; until that runs, the
+ * upsert's duplicate-key error is swallowed by `record`, which never throws — so
+ * the failure mode is a few uncounted calls rather than a broken assistant.
+ */
+aiUsageSchema.index({ day: 1, model: 1, feature: 1 }, { unique: true });
 
 module.exports = mongoose.model("AiUsage", aiUsageSchema);

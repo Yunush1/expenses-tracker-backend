@@ -135,4 +135,27 @@ const codeLookupLimiter = lazy(() =>
   )
 );
 
-module.exports = { globalLimiter, createGroupLimiter, writeLimiter, codeLookupLimiter };
+/**
+ * Uploading a photograph to a vision model.
+ *
+ * This one is not the cost control — the group's monthly scan allowance is, and it
+ * is claimed atomically before the provider is called (services/receiptService).
+ * What this bounds is the *burst*: a scan holds a provider connection for tens of
+ * seconds, and one browser uploading in a loop should not be able to occupy them
+ * all while its allowance drains.
+ *
+ * Deliberately far tighter than `writeLimiter` and far looser than the free
+ * allowance, so nobody ever meets this limit by using the feature normally — a
+ * group that has scans left should be told about scans, not about rate limits.
+ */
+const scanLimiter = lazy(() =>
+  build("scan", 15 * 60 * 1000, 15, "That's a lot of photos at once. Give it a minute.")
+);
+
+module.exports = {
+  globalLimiter,
+  createGroupLimiter,
+  writeLimiter,
+  codeLookupLimiter,
+  scanLimiter,
+};
