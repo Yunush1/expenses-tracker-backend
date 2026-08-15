@@ -72,9 +72,17 @@ const statusOf = (row, now = new Date()) => {
   return row.status || PLAN_STATUS.ACTIVE;
 };
 
-/** The allowance table this plan draws from. Both paid plans share one — see config. */
+/**
+ * The allowance table this plan draws from. Both paid plans share one — see config.
+ *
+ * The condition is **not** negated, and it is worth saying so because the negated
+ * version is a one-character edit that no type checker catches and that inverts
+ * the entire product: free groups would draw the paid allowances and paying groups
+ * the free ones. It has happened once already. `tests/entitlement.test.js` fails
+ * four ways if it happens again.
+ */
 const allowancesFor = (plan) =>
-  !isPaidPlan(plan) ? config.entitlement.paid : config.entitlement.free;
+  isPaidPlan(plan) ? config.entitlement.paid : config.entitlement.free;
 
 /**
  * The raw allowance for one feature under one plan.

@@ -122,6 +122,79 @@ const expenseSchema = new mongoose.Schema(
       type: [mongoose.Schema.Types.Mixed],
       default: [],
     },
+    /**
+     * What the receipt this came off actually said — GST, subtotal, invoice
+     * number, the lot (docs/10-AI-ASSISTANT.md §4.2).
+     *
+     * ## Why it is on the expense and not in a collection of its own
+     *
+     * One receipt becomes several expenses, so this is duplicated across the lines
+     * of a single bill — which looks like the wrong shape until you ask what
+     * happens when somebody deletes one line, or moves it to another month, or
+     * edits its amount. Each line is independently editable and independently
+     * deletable, and a shared receipt row would leave orphans, dangling references
+     * and a "which line still owns this?" question with no good answer.
+     *
+     * Duplicating a dozen small fields per line is cheap. Keeping every expense
+     * able to explain itself, forever, without a join, is not.
+     *
+     * ## Why none of it is authoritative
+     *
+     * Nothing here is read by a balance, a split or a settlement. `amountMinor`
+     * above is what the group owes; this is provenance — what the paper said,
+     * transcribed by a model that can be wrong. A figure in here disagreeing with
+     * the expense is a fact about the scan, not a discrepancy to reconcile.
+     *
+     * Absent on everything typed by hand, which is most expenses.
+     */
+    receipt: {
+      type: new mongoose.Schema(
+        {
+          merchant: { type: String, default: null },
+          /** The bill's own reference, and the seller's tax id, as printed. */
+          invoiceNo: { type: String, default: null },
+          gstin: { type: String, default: null },
+          paymentMethod: { type: String, default: null },
+          /** All integer minor units, like every other amount here. */
+          subtotalMinor: { type: Number, default: null },
+          /**
+           * One entry per printed tax line, kept apart rather than summed: an
+           * Indian bill prints CGST and SGST separately at half the rate each, and
+           * a single "tax" figure loses the split a GST return needs.
+           */
+          taxes: {
+            type: [
+              {
+                _id: false,
+                label: { type: String, required: true },
+                amountMinor: { type: Number, required: true },
+                /** Null when the bill printed an amount but no percentage. */
+                rate: { type: Number, default: null },
+              },
+            ],
+            default: [],
+          },
+          serviceMinor: { type: Number, default: null },
+          discountMinor: { type: Number, default: null },
+          tipMinor: { type: Number, default: null },
+          /** What the bill said it came to — not what these expenses add up to. */
+          totalMinor: { type: Number, default: null },
+          /**
+           * The photo, named rather than positional.
+           *
+           * It is also in `attachments[0]`, and the duplication is deliberate:
+           * `attachments` is a general list that could hold anything later, while
+           * this says *which* image is the receipt for this expense. A consumer
+           * asking "show me the receipt" should not have to know that index zero
+           * happens to be it today.
+           */
+          imageUrl: { type: String, default: null },
+          scannedAt: { type: Date, default: Date.now },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
     createdByMemberId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Member",

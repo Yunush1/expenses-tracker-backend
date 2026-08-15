@@ -11,6 +11,15 @@ const { BALANCE_STATUS, SPLIT_TYPES } = require("../constants");
 
 const id = (value) => (value ? String(value) : null);
 
+/**
+ * A major-unit twin that stays null when the minor value is absent.
+ *
+ * `toMajor(null)` is 0, and on a receipt a zero is a claim — "no service charge
+ * was printed" and "the service charge was zero" are different facts, and only one
+ * of them should render a line.
+ */
+const money = (minor, currency) => (minor === null || minor === undefined ? null : toMajor(minor, currency));
+
 const toGroupDTO = (group) => ({
   id: id(group._id),
   name: group.name,
@@ -157,6 +166,47 @@ const toExpenseDTO = (expense, memberNameById = new Map(), currency = "INR") => 
      * having to wonder whether the string is a link to somewhere hostile.
      */
     attachments: expense.attachments || [],
+    /**
+     * What the receipt said, when this came off one. Null on everything typed by
+     * hand, which is most expenses — so a client renders a receipt panel only when
+     * there is a receipt, rather than an empty one everywhere.
+     *
+     * Emitted with major-unit twins like every other money field here, because the
+     * screen showing "CGST 9% ₹112.50" should not be doing division.
+     */
+    receipt: expense.receipt
+      ? {
+          merchant: expense.receipt.merchant || null,
+          invoiceNo: expense.receipt.invoiceNo || null,
+          gstin: expense.receipt.gstin || null,
+          paymentMethod: expense.receipt.paymentMethod || null,
+          subtotalMinor: expense.receipt.subtotalMinor ?? null,
+          subtotal: money(expense.receipt.subtotalMinor, currency),
+          taxes: (expense.receipt.taxes || []).map((tax) => ({
+            label: tax.label,
+            rate: tax.rate ?? null,
+            amountMinor: tax.amountMinor,
+            amount: toMajor(tax.amountMinor, currency),
+          })),
+          taxMinor: (expense.receipt.taxes || []).reduce((sum, tax) => sum + tax.amountMinor, 0),
+          serviceMinor: expense.receipt.serviceMinor ?? null,
+          service: money(expense.receipt.serviceMinor, currency),
+          discountMinor: expense.receipt.discountMinor ?? null,
+          discount: money(expense.receipt.discountMinor, currency),
+          tipMinor: expense.receipt.tipMinor ?? null,
+          tip: money(expense.receipt.tipMinor, currency),
+          totalMinor: expense.receipt.totalMinor ?? null,
+          total: money(expense.receipt.totalMinor, currency),
+          /**
+           * Relative to the API, which serves it. A client on another origin has
+           * to resolve it — the frontend's `assetUrl` does — because this server
+           * has no reliable way to know the hostname it was reached on, and
+           * guessing one breaks every deployment that is not the author's.
+           */
+          imageUrl: expense.receipt.imageUrl || expense.attachments?.[0] || null,
+          scannedAt: expense.receipt.scannedAt || null,
+        }
+      : null,
     createdBy: {
       id: id(expense.createdByMemberId),
       name: nameOf(expense.createdByMemberId),

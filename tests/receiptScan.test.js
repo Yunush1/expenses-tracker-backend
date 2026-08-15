@@ -143,6 +143,12 @@ test("the model is told to transcribe rather than calculate", () => {
    */
   assert.match(receiptScan.SYSTEM_PROMPT, /never add up|never compute/i);
   assert.match(receiptScan.SYSTEM_PROMPT, /never invent/i);
-  // Subtotals and tax lines are not items; folding them in would double the bill.
-  assert.match(receiptScan.SYSTEM_PROMPT, /skip subtotals/i);
+  /**
+   * Subtotals, taxes and the grand total are not items. Folding them in would
+   * double the bill — every tax line would become something somebody bought, and
+   * the split would charge for it.
+   */
+  assert.match(receiptScan.SYSTEM_PROMPT, /are NOT items/i);
+  // Each tax line stays separate: CGST and SGST summed lose what a GST return needs.
+  assert.match(receiptScan.SYSTEM_PROMPT, /do not add them up/i);
 });

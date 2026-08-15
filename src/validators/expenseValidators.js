@@ -96,6 +96,52 @@ const attachments = z
   .max(1)
   .optional();
 
+/**
+ * What the receipt said, as read by the scan.
+ *
+ * **Provenance, never money.** Nothing in here is used by a balance, a split or a
+ * settlement, so it is validated for shape and bounds and not for agreement with
+ * the amounts beside it — a total that disagrees with the lines is a fact about
+ * the bill (tax, service, a missed line), not an error to reject.
+ *
+ * Minor units, like every other amount crossing this boundary, and `nullish`
+ * throughout because a receipt legitimately prints only some of these.
+ */
+const minorAmount = z.number().int().min(0).max(LIMITS.MAX_AMOUNT_MAJOR * 100).nullish();
+
+const receipt = z
+  .object({
+    merchant: z.string().trim().max(LIMITS.EXPENSE_DESC_MAX).nullish(),
+    invoiceNo: z.string().trim().max(40).nullish(),
+    gstin: z.string().trim().max(24).nullish(),
+    paymentMethod: z.enum(["CASH", "CARD", "UPI", "WALLET"]).nullish(),
+    subtotalMinor: minorAmount,
+    taxes: z
+      .array(
+        z.object({
+          label: z.string().trim().min(1).max(24),
+          amountMinor: z.number().int().min(0),
+          rate: z.number().min(0).max(100).nullish(),
+        })
+      )
+      .max(6)
+      .optional(),
+    serviceMinor: minorAmount,
+    discountMinor: minorAmount,
+    tipMinor: minorAmount,
+    totalMinor: minorAmount,
+    /**
+     * The photo, and only one this server produced — the same rule as
+     * `attachments` above, for the same reason: an arbitrary URL here would be
+     * loaded by every member of the group.
+     */
+    imageUrl: z
+      .string()
+      .regex(/^\/uploads\/receipts\/[a-f0-9]{32}\.(?:jpg|png|webp)$/)
+      .nullish(),
+  })
+  .nullish();
+
 const createExpenseBatchSchema = z.object({
   paidBy: objectId,
   expenseDate,
@@ -105,6 +151,7 @@ const createExpenseBatchSchema = z.object({
    * for one answer.
    */
   attachments,
+  receipt,
   items: z
     .array(
       z.object({

@@ -251,6 +251,13 @@ const createExpenseBatch = async ({ group, actor, dto }) => {
          * field has been reserved for this since docs/02-HLD.md §9.
          */
         attachments: dto.attachments || [],
+        /**
+         * The bill's own figures, on every line it produced — same reasoning as
+         * the attachment above, and the same trade: a dozen small duplicated
+         * fields, against every expense being able to explain where it came from
+         * after the others have been edited or deleted. See models/expense.js.
+         */
+        receipt: dto.receipt ? { ...dto.receipt, scannedAt: new Date() } : null,
         createdByMemberId: actor._id,
         clientRequestId: item.clientRequestId || null,
         version: 0,

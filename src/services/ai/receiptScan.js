@@ -60,6 +60,14 @@ Return exactly this shape:
   "merchant": "string or null",
   "date": "YYYY-MM-DD or null",
   "currencyCode": "3-letter code or null",
+  "invoiceNo": "string or null",
+  "gstin": "string or null",
+  "paymentMethod": "CASH, CARD, UPI, WALLET or null",
+  "subtotal": "number as a string, or null",
+  "taxes": [{ "label": "CGST", "rate": "9", "amount": "112.50" }],
+  "serviceCharge": "number as a string, or null",
+  "discount": "number as a string, or null",
+  "tip": "number as a string, or null",
   "total": "number as a string, or null",
   "items": [{ "description": "string", "amount": "number as a string" }],
   "unresolved": ["short phrases naming what you could not read"]
@@ -67,13 +75,19 @@ Return exactly this shape:
 
 Rules:
 - Transcribe only. Never add up a column, never compute a total, never apply tax.
-  If the printed total is unreadable, return null for it.
-- Never invent an item. If a line is illegible, omit it and say so in "unresolved".
+  If a printed figure is unreadable, return null for it.
+- Never invent an item or a tax line. If something is illegible, omit it and say
+  so in "unresolved".
 - Amounts are plain numbers: "1250.50", not "Rs. 1,250.50" and not "1250,50".
 - "description" is what the line says, shortened to a few words. Keep the
   merchant's own wording; do not translate or tidy it.
-- Skip subtotals, tax lines, discounts, tips, service charges and the grand total —
-  those are not items. Put the grand total in "total".
+- "items" is only things that were bought. Subtotals, taxes, discounts, tips,
+  service charges, rounding and the grand total are NOT items — each has its own
+  field above.
+- "taxes" is one entry per printed tax line, in the order they appear. Indian bills
+  usually print CGST and SGST separately: keep them separate, do not add them up.
+  "rate" is the percentage without the sign, and is null if not printed.
+- "discount" is a positive number, however it is printed on the bill.
 - If the photo is not a receipt or bill, return {"isReceipt": false}.
 - Output JSON only. No prose, no code fences.`;
 
@@ -281,6 +295,40 @@ const scanReceipt = async ({ dataUrl, currency = "INR" }) => {
   const itemsMinor = items.reduce((sum, item) => sum + item.amountMinor, 0);
   const totalMinor = total ? toMinor(total, currency) : null;
 
+  /** A printed figure → minor units, or null. Never a zero standing in for absent. */
+  const minorOf = (raw) => {
+    const amount = cleanAmount(raw);
+    return amount ? toMinor(amount, currency) : null;
+  };
+
+  /**
+   * Every printed tax line, kept separate.
+   *
+   * Indian bills print CGST and SGST as two lines at half the rate each, and
+   * summing them into one "tax" figure loses the split that an accountant and a
+   * GST return both need. They are transcribed in the order they appear, which is
+   * the order they will be read back in.
+   */
+  const taxes = (Array.isArray(parsed.taxes) ? parsed.taxes : [])
+    .slice(0, 6)
+    .map((entry) => ({
+      label: String(entry?.label ?? "").trim().slice(0, 24) || "Tax",
+      amountMinor: minorOf(entry?.amount),
+      /**
+       * The rate as printed, when it was. A number rather than a string so a
+       * consumer can compare it, and null rather than 0 when the bill did not say
+       * — "no rate printed" and "zero-rated" are different claims about tax.
+       */
+      rate: Number.isFinite(Number(entry?.rate)) && String(entry?.rate ?? "").trim() !== ""
+        ? Number(entry.rate)
+        : null,
+    }))
+    .filter((entry) => entry.amountMinor !== null);
+
+  const taxMinor = taxes.length > 0
+    ? taxes.reduce((sum, entry) => sum + entry.amountMinor, 0)
+    : null;
+
   return {
     isReceipt: true,
     merchant: String(parsed.merchant ?? "").trim().slice(0, LIMITS.EXPENSE_DESC_MAX) || null,
@@ -288,6 +336,25 @@ const scanReceipt = async ({ dataUrl, currency = "INR" }) => {
     currencyCode: /^[A-Z]{3}$/.test(String(parsed.currencyCode ?? "").trim().toUpperCase())
       ? String(parsed.currencyCode).trim().toUpperCase()
       : null,
+    /**
+     * The bill's own references. Free text, bounded and trimmed — they are printed
+     * identifiers, not values, and nothing computes with them.
+     */
+    invoiceNo: String(parsed.invoiceNo ?? "").trim().slice(0, 40) || null,
+    /** 15 characters on an Indian bill, but not validated as such: a receipt from
+     * anywhere else prints its own kind of tax id, and refusing to record one
+     * because it is not Indian would be worse than recording it as it reads. */
+    gstin: String(parsed.gstin ?? "").trim().slice(0, 24) || null,
+    paymentMethod:
+      ["CASH", "CARD", "UPI", "WALLET"].find(
+        (method) => method === String(parsed.paymentMethod ?? "").trim().toUpperCase()
+      ) || null,
+    subtotalMinor: minorOf(parsed.subtotal),
+    taxes,
+    taxMinor,
+    serviceMinor: minorOf(parsed.serviceCharge),
+    discountMinor: minorOf(parsed.discount),
+    tipMinor: minorOf(parsed.tip),
     total,
     totalMinor,
     items,
