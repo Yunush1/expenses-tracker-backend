@@ -647,6 +647,63 @@ const config = Object.freeze({
     retentionMs: Math.max(1, Number(process.env.RECEIPT_RETENTION_DAYS ?? 2)) * 24 * 60 * 60 * 1000,
   }),
 
+  /**
+   * The blog (docs/23-BLOG.md).
+   *
+   * Every value here has a working default, so a deployment that never asked for
+   * a blog gets one that functions — drafts save, posts publish, and the only
+   * thing missing is the automatic rebuild, which is reported to the author
+   * rather than failed silently.
+   */
+  blog: Object.freeze({
+    /**
+     * The URL that starts a rebuild of the static site when POSTed to.
+     *
+     * This is the load-bearing setting for organic reach, and its absence is not
+     * an error. A published post is served by the API and rendered by the React
+     * route either way; what a rebuild adds is the pre-rendered HTML that
+     * crawlers which do not run JavaScript actually read (docs/15-SEO.md §3).
+     * Without it the post is live and effectively invisible to Bing and to every
+     * link unfurler until someone deploys by hand.
+     *
+     * Netlify: Site settings → Build & deploy → Build hooks.
+     * Cloudflare Pages: Settings → Builds & deployments → Deploy hooks.
+     * Vercel: Settings → Git → Deploy Hooks.
+     *
+     * **It is a secret.** Anyone holding it can spend the account's build
+     * minutes, so it belongs in the environment and never in the frontend bundle.
+     */
+    deployHookUrl: (process.env.BLOG_DEPLOY_HOOK_URL || "").trim(),
+
+    imagesEnabled: (process.env.BLOG_IMAGES_ENABLED ?? "true").toLowerCase() !== "false",
+
+    /**
+     * Relative to the working directory, served statically from `/uploads/blog`.
+     *
+     * Deliberately **not** under the receipts directory: receipts are swept after
+     * a couple of days and these must survive forever, so the two must not share
+     * a parent that a cleanup job could ever be pointed at.
+     *
+     * The warning that comes with a local directory: on a host with an ephemeral
+     * filesystem (Heroku, a plain container, most PaaS free tiers) these files
+     * disappear on every restart, and the articles referencing them break. Mount
+     * a volume, or move `utils/blogStorage.save` to object storage — it is one
+     * function.
+     */
+    imageDir: (process.env.BLOG_IMAGE_DIR || "public/blog").trim(),
+
+    /**
+     * The cap on one uploaded image, in bytes, checked after base64 decoding.
+     *
+     * 5 MB is generous for the web — anything near it should have been resized
+     * before upload, and an article that ships 5 MB hero images will lose more
+     * ranking to Core Web Vitals than the picture wins back. Set together with
+     * `BLOG_BODY_LIMIT` in app.js, which must be comfortably larger because
+     * base64 inflates by a third.
+     */
+    maxImageBytes: Math.max(1, Number(process.env.BLOG_MAX_IMAGE_MB ?? 5)) * 1024 * 1024,
+  }),
+
   join: Object.freeze({
     /**
      * How long someone waits in the room before the request lapses

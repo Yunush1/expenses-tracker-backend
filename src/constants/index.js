@@ -448,6 +448,20 @@ const METERED_FEATURES = Object.freeze(
  * of company spending that silently starts life readable by anyone with the URL
  * is the one failure mode worth engineering against.
  */
+/**
+ * A blog post's lifecycle (docs/23-BLOG.md).
+ *
+ * Two states, not three. There is no "scheduled": publishing fires a deploy hook
+ * that rebuilds the static site (services/deployHook.js), and a scheduled state
+ * would need a job that reproduces that side effect at a time nobody is watching
+ * — with the failure mode being a post that is live in the database and absent
+ * from every crawlable page. Publish when you mean to publish.
+ */
+const BLOG_STATUS = Object.freeze({
+  DRAFT: "DRAFT",
+  PUBLISHED: "PUBLISHED",
+});
+
 const SHEET_VISIBILITY = Object.freeze({
   PRIVATE: "PRIVATE",
   PUBLIC: "PUBLIC",
@@ -856,6 +870,53 @@ const LIMITS = Object.freeze({
    * is a message that legitimately waits for someone to come back from leave.
    */
   SHEET_REQUEST_TTL_DAYS: 30,
+
+  /* ------------------------------- Blog -------------------------------- */
+
+  /**
+   * The slug — the part of the URL after `/blog/`.
+   *
+   * Short on purpose. Google truncates the displayed URL in a result, and a slug
+   * longer than this is almost always a title that was pasted rather than a
+   * phrase that was chosen. The floor of 3 keeps `/blog/a` out of the index.
+   */
+  BLOG_SLUG_MIN: 3,
+  BLOG_SLUG_MAX: 96,
+  BLOG_TITLE_MAX: 160,
+  /**
+   * The `<title>` tag, which is a different string from the H1 and is capped by
+   * what a search result can show — roughly 580 pixels, or about 60 characters.
+   * Not enforced at 60: a title truncated in the SERP still ranks, and a
+   * validator that refuses to save one is a validator that gets worked around.
+   * The editor warns; this only stops the absurd.
+   */
+  BLOG_META_TITLE_MAX: 120,
+  /** Same reasoning at the meta description's ~160-character display limit. */
+  BLOG_META_DESC_MAX: 320,
+  BLOG_EXCERPT_MAX: 400,
+  /**
+   * The rendered article body, in characters.
+   *
+   * Generous — 400k is a very long post plus TinyMCE's markup overhead — and it
+   * is the number `BLOG_BODY_LIMIT` in app.js is sized against. The two are set
+   * together; raising one alone shows up as a save failing at a length nobody
+   * wrote down.
+   */
+  BLOG_CONTENT_MAX: 400_000,
+  BLOG_MAX_TAGS: 12,
+  BLOG_TAG_MAX: 40,
+  BLOG_MAX_FAQS: 20,
+  BLOG_FAQ_Q_MAX: 300,
+  BLOG_FAQ_A_MAX: 1200,
+  /** How many posts a public listing returns per page. */
+  BLOG_PAGE_SIZE: 12,
+  /**
+   * Words per minute behind the "6 min read" label.
+   *
+   * 220 is the middle of the range measured for adult silent reading of ordinary
+   * prose. It is a rounded estimate presented as one, not a claim.
+   */
+  BLOG_WPM: 220,
 });
 
 const ERROR_CODES = Object.freeze({
@@ -980,6 +1041,14 @@ const ERROR_CODES = Object.freeze({
    */
   SHEET_RANGE_LOCKED: "SHEET_RANGE_LOCKED",
 
+  /**
+   * A post already owns this slug. Its own code because the slug is the URL and
+   * the URL is the thing being ranked — silently appending "-2" would publish a
+   * second page at an address the author did not choose and did not link to.
+   */
+  BLOG_SLUG_TAKEN: "BLOG_SLUG_TAKEN",
+  BLOG_POST_NOT_FOUND: "BLOG_POST_NOT_FOUND",
+
   DUPLICATE: "DUPLICATE",
   RATE_LIMITED: "RATE_LIMITED",
   ORIGIN_NOT_ALLOWED: "ORIGIN_NOT_ALLOWED",
@@ -1012,6 +1081,7 @@ module.exports = {
   FEATURE_KINDS,
   FEATURE_SPECS,
   METERED_FEATURES,
+  BLOG_STATUS,
   SHEET_VISIBILITY,
   SHEET_ROLES,
   SHEET_ROLE_RANK,

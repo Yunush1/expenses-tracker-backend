@@ -7,6 +7,7 @@ const aiRoutes = require("./aiRoutes");
 const pointsRoutes = require("./pointsRoutes");
 const referralRoutes = require("./referralRoutes");
 const sheetRoutes = require("./sheetRoutes");
+const blogRoutes = require("./blogRoutes");
 
 const router = express.Router();
 
@@ -44,5 +45,17 @@ router.use("/referrals", referralRoutes);
  * asymmetry is deliberate and which direction each half fails in.
  */
 router.use("/sheets", sheetRoutes);
+/**
+ * The blog (docs/23-BLOG.md).
+ *
+ * The only router here whose *reads* are meant to be crawled. Everything else in
+ * this file is either behind an account or behind a capability URL and carries
+ * `noindex`; these pages exist to be found by strangers, which is why app.js
+ * exempts this prefix from the blanket `X-Robots-Tag` it sets on everything else.
+ *
+ * Writes are gated by `requireAuth` + `requireAdmin` on the `/admin` prefix
+ * inside the router, keyed off the `ADMIN_EMAILS` allowlist.
+ */
+router.use("/blog", blogRoutes);
 
 module.exports = router;

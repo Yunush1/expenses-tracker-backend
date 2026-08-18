@@ -9,6 +9,7 @@ const errorMiddleware = require("./middlewares/error.middleware");
 const { globalLimiter } = require("./middlewares/rateLimiter");
 const { ERROR_CODES } = require("./constants");
 const receiptStorage = require("./utils/receiptStorage");
+const blogStorage = require("./utils/blogStorage");
 const logger = require("./utils/logger");
 
 const app = express();
@@ -81,6 +82,31 @@ app.use(helmet());
  * See docs/02-HLD.md §3.4.
  */
 app.use((req, res, next) => {
+  /**
+   * The blog is the one exception, and it has to be.
+   *
+   * Everything else this server answers is either behind an account or behind a
+   * capability URL, so a blanket `noindex` is exactly right for it. Blog images
+   * are the opposite case: they are published on purpose, they are what a search
+   * result and a shared link preview show, and `noindex` on the file would keep
+   * them out of Google Images and devalue the article that embeds them.
+   *
+   * Scoped to the served *files* rather than the JSON API. The API is not a
+   * crawl surface — nothing links to it and it returns no HTML — so it keeps the
+   * strict header, and only the bytes that are meant to be seen lose it.
+   *
+   * `Referrer-Policy` is relaxed for the same paths for a different reason: with
+   * `no-referrer`, an image hotlinked from another site arrives with no
+   * indication of where from, which removes the only signal that would let this
+   * server ever act on it. `strict-origin-when-cross-origin` is the modern
+   * default and leaks no path.
+   */
+  if (req.path.startsWith("/uploads/blog")) {
+    res.setHeader("X-Robots-Tag", "all");
+    res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+    return next();
+  }
+
   res.setHeader("X-Robots-Tag", "noindex, nofollow");
   res.setHeader("Referrer-Policy", "no-referrer");
   next();
@@ -122,6 +148,34 @@ if (config.receipts.enabled) {
 }
 
 /**
+ * Article images, served publicly and cached hard.
+ *
+ * Unlike receipts, nothing here is secret — these are `<img>` tags on pages
+ * built to be found. What the two mounts share is the reason the cache is safe:
+ * the filename is 128 random bits and a file is never rewritten, only created,
+ * so a URL that resolves once resolves to the same bytes forever.
+ *
+ * `index: false` and `redirect: false` keep the directory from being browsable.
+ * That matters even for public files: a listing turns "the images used by the
+ * blog" into "every image ever uploaded", including ones from a draft that was
+ * never published or a post that was taken down.
+ */
+if (config.blog.imagesEnabled) {
+  app.use(
+    blogStorage.URL_PREFIX,
+    express.static(blogStorage.storageDir(), {
+      index: false,
+      redirect: false,
+      immutable: true,
+      maxAge: "365d",
+      // An uploaded file a browser decides to treat as a document is the classic
+      // stored-XSS route. Nothing in here is ever a page.
+      setHeaders: (res) => res.setHeader("X-Content-Type-Options", "nosniff"),
+    })
+  );
+}
+
+/**
  * Sheets get a larger body than everything else, and get it **first**.
  *
  * Pasting a block out of Excel is the whole point of the grid, and a few hundred
@@ -139,6 +193,31 @@ if (config.receipts.enabled) {
  * together, and 500 rows of ordinary data sits comfortably inside 1mb.
  */
 app.use("/api/sheets", express.json({ limit: "1mb" }));
+
+/**
+ * The blog editor sends more than 64kb, in two very different sizes.
+ *
+ * An **image** arrives as a base64 data URL, which inflates the file by a third:
+ * the 5 MB cap in `BLOG_MAX_IMAGE_MB` needs about 6.8 MB of body, and 8 MB gives
+ * it room without pretending to be exact. The two are set together — raising one
+ * without the other shows up as an upload failing at a size nobody wrote down.
+ *
+ * A **post** is HTML, and `BLOG_CONTENT_MAX` allows 400k characters, which is a
+ * very long article plus TinyMCE's markup. 1 MB covers it with the same margin
+ * the sheets route uses for a paste out of Excel.
+ *
+ * Order is load-bearing three times over. The image route must be matched before
+ * the general blog route, the general blog route before the global parser, and
+ * whichever runs first consumes the stream — mounted the other way round, the
+ * global 64 kb would win and these lines would do nothing at all.
+ *
+ * Both are scoped to the admin prefix, which sits behind a verified token and
+ * the operator allowlist. The public read routes take no body and are left on
+ * the global limit, so nothing anonymous gains a larger buffer to be flooded
+ * with.
+ */
+app.use("/api/blog/admin/images", express.json({ limit: "8mb" }));
+app.use("/api/blog/admin", express.json({ limit: "1mb" }));
 
 /**
  * The one route that carries a photograph, and nothing else does.
