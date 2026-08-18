@@ -119,6 +119,31 @@ jobs:
       name: production
 
     steps:
+      # Without this the first sign of an unconfigured repository is
+      # "error: missing server host" from a vendored Go binary, which names
+      # neither the secret nor where to put it.
+      #
+      # It is a separate step because the `secrets` context is not available in
+      # an `if:` condition — GitHub exposes it to `with:` and `env:` only — so
+      # a job-level guard cannot check this. Mapping the secrets to env vars
+      # here is the one place their presence can be tested.
+      - name: Check deploy credentials are configured
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+        run: |
+          missing=""
+          [ -n "$SSH_HOST" ] || missing="$missing SSH_HOST"
+          [ -n "$SSH_USER" ] || missing="$missing SSH_USER"
+          [ -n "$SSH_KEY" ]  || missing="$missing SSH_KEY"
+
+          if [ -n "$missing" ]; then
+            echo "::error::Deploy secrets not set:$missing — add them under Settings > Secrets and variables > Actions > Secrets, then re-run this job. Tests already passed; nothing was deployed."
+            exit 1
+          fi
+          echo "All three deploy secrets are present."
+
       - name: Release
         uses: appleboy/ssh-action@v1
         with:
@@ -126,9 +151,11 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           port: ${{ vars.SSH_PORT || 22 }}
-          # Without this the remote script's failures are swallowed and the job
-          # reports success for a deploy that did not happen.
-          script_stop: true
+          # npm ci twice (release, then a possible rollback) plus the health
+          # poll can outrun the 10m default on a small box.
+          command_timeout: 20m
+          # GITHUB_SHA is set on the runner, not on the VPS; this forwards it
+          # into the remote shell, where `git reset` below needs it.
           envs: GITHUB_SHA
           script: |
             set -euo pipefail
