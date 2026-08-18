@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [master, mainline]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes the in-flight run obsolete — drop it
+# rather than paying for a result nobody will read.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      # node --test over tests/**/*.test.js. These are pure unit tests — the
+      # split maths, the settlement optimiser, entitlement policy — so there is
+      # no Mongo or Redis service to provision here. Anything that needs a
+      # database lives in scripts/check-*.js and is run by hand.
+      - name: Unit tests
+        run: npm test
+
+      # Boot is where the integration failures actually surface: a missing
+      # require, a config key read at module load, a route table that throws on
+      # registration. `npm test` never loads src/app.js, so without this a
+      # server that cannot start still ships green.
+      - name: Smoke test — server boots and answers
+        run: node scripts/ci-smoke.js
+        env:
+          NODE_ENV: production
+          PORT: 5000
+          MONGO_URI: mongodb://127.0.0.1:27017/expense_sharing_ci
+          CLIENT_URLS: http://localhost:5173
+          APP_BASE_URL: http://localhost:5173
+
+    services:
+      # Mongo is the one dependency the boot genuinely blocks on: connectDB()
+      # is awaited before the listener opens. Redis, Firebase and SMTP are all
+      # optional by design and degrade to logged warnings, so they stay out.
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
