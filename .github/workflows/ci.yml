@@ -142,7 +142,47 @@ jobs:
             echo "::error::Deploy secrets not set:$missing — add them under Settings > Secrets and variables > Actions > Secrets, then re-run this job. Tests already passed; nothing was deployed."
             exit 1
           fi
-          echo "All three deploy secrets are present."
+
+          # Present is not the same as usable. The SSH library reports a wrong
+          # SSH_KEY as "ssh.ParsePrivateKey: ssh: no key found", which sounds
+          # like a missing secret rather than a malformed one and sends people
+          # to re-add the secret they already added. These three checks name
+          # the actual mistake instead.
+          #
+          # Nothing here echoes key material: only its shape is examined.
+          case "$SSH_KEY" in
+            ssh-rsa*|ssh-ed25519*|ecdsa-sha2-*)
+              echo "::error::SSH_KEY holds a *public* key. It needs the private half — the contents of C:\Users\Admin\.ssh\id_ed25519, the file with no .pub extension."
+              exit 1
+              ;;
+          esac
+
+          case "$SSH_KEY" in
+            *"-----BEGIN "*"PRIVATE KEY-----"*) ;;
+            *)
+              echo "::error::SSH_KEY does not contain a '-----BEGIN ... PRIVATE KEY-----' header. Copy the whole file, header and footer lines included."
+              exit 1
+              ;;
+          esac
+
+          case "$SSH_KEY" in
+            *"-----END "*"PRIVATE KEY-----"*) ;;
+            *)
+              echo "::error::SSH_KEY is missing its '-----END ... PRIVATE KEY-----' footer — the paste was truncated. Copy the whole file."
+              exit 1
+              ;;
+          esac
+
+          # A valid ed25519 key is ~7 lines; RSA is ~28. One line means the
+          # newlines were eaten on the way into the secret box, which parses
+          # as nothing at all.
+          lines=$(printf '%s' "$SSH_KEY" | wc -l)
+          if [ "$lines" -lt 3 ]; then
+            echo "::error::SSH_KEY is $lines line(s) long — its line breaks were lost. Paste the file with its newlines intact."
+            exit 1
+          fi
+
+          echo "Deploy secrets present; SSH_KEY looks like a private key ($lines lines)."
 
       - name: Release
         uses: appleboy/ssh-action@v1
