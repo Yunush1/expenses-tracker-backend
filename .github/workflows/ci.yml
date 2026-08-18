@@ -1,13 +1,34 @@
-name: CI
+name: CI/CD
+
+# Tests every push and pull request; releases master to the VPS over SSH.
+#
+# Repository -> Settings -> Secrets and variables -> Actions
+#
+#   Secrets    SSH_HOST     the box's hostname or IP
+#              SSH_USER     the deploy user (needs write on DEPLOY_PATH)
+#              SSH_KEY      that user's *private* key, whole file including
+#                           the BEGIN/END lines
+#
+#   Variables  DEPLOY_PATH  checkout path on the server, default /srv/splitly-api
+#              APP_PORT     port the API listens on, default 5000
+#              SSH_PORT     default 22
+#
+# Path and ports are variables rather than secrets on purpose: masking
+# them turns every line of a failed deploy log into *** and buys nothing, since
+# neither grants access without the key. The hostname stays a secret.
+#
+# The server holds its own .env.production. CI never writes it — MONGO_URI, the
+# Firebase key and the SMTP password do not belong in a workflow log.
 
 on:
   push:
-    branches: [master, mainline]
+    branches: [master, main]
   pull_request:
   workflow_dispatch:
 
 # A newer push to the same branch makes the in-flight run obsolete — drop it
-# rather than paying for a result nobody will read.
+# rather than paying for a result nobody will read. Deploy opts out of this
+# below: a half-applied release must never be cancelled mid-flight.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -16,6 +37,45 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+
+    # Every one of these is read at *module load* by src/config/env.js, which
+    # exits the process when MONGO_URI is absent. That reaches the unit tests
+    # too: 16 of the 18 files require something under src/, so without this
+    # block they do not fail an assertion — they die on require, and the whole
+    # file is reported as one failure.
+    #
+    # Locally the same values arrive from .env.development, which is gitignored
+    # and therefore does not exist on a runner. Setting them here is what makes
+    # a CI run reproduce a developer's run instead of a bare checkout's.
+    #
+    # NODE_ENV=production keeps it hermetic: dotenv looks for .env.production,
+    # finds nothing, and the values below are the whole environment — no local
+    # file can quietly change what CI proves.
+    env:
+      NODE_ENV: production
+      PORT: 5000
+      MONGO_URI: mongodb://127.0.0.1:27017/expense_sharing_ci
+      CLIENT_URLS: http://localhost:5173
+      APP_BASE_URL: http://localhost:5173
+
+    services:
+      # Mongo is the one dependency boot genuinely blocks on: connectDB() is
+      # awaited before the listener opens. Redis, Firebase and SMTP are all
+      # optional by design and degrade to a logged warning, so they stay out.
+      #
+      # The unit tests never open a connection — they only need MONGO_URI to
+      # be *present* so config validation passes. It is the smoke step below
+      # that needs a database actually answering.
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v5
 
@@ -26,10 +86,6 @@ jobs:
 
       - run: npm ci
 
-      # node --test over tests/**/*.test.js. These are pure unit tests — the
-      # split maths, the settlement optimiser, entitlement policy — so there is
-      # no Mongo or Redis service to provision here. Anything that needs a
-      # database lives in scripts/check-*.js and is run by hand.
       - name: Unit tests
         run: npm test
 
@@ -39,23 +95,83 @@ jobs:
       # server that cannot start still ships green.
       - name: Smoke test — server boots and answers
         run: node scripts/ci-smoke.js
-        env:
-          NODE_ENV: production
-          PORT: 5000
-          MONGO_URI: mongodb://127.0.0.1:27017/expense_sharing_ci
-          CLIENT_URLS: http://localhost:5173
-          APP_BASE_URL: http://localhost:5173
 
-    services:
-      # Mongo is the one dependency the boot genuinely blocks on: connectDB()
-      # is awaited before the listener opens. Redis, Firebase and SMTP are all
-      # optional by design and degrade to logged warnings, so they stay out.
-      mongo:
-        image: mongo:7
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1}).ok'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
+  deploy:
+    name: Deploy to VPS
+    needs: test
+    # Only a real push to the default branch ships. A pull_request run must not
+    # deploy — its code has not been reviewed into master yet — and neither
+    # should a manual dispatch on a side branch.
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    # Two releases overlapping would interleave `git reset` and `pm2 reload` on
+    # the same directory. Queue them instead, and never cancel one part-way:
+    # the dangerous state is a checkout updated with the process not yet
+    # reloaded, which is exactly what cancelling produces.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    # Gives the deploy a place to hang required reviewers or a wait timer, and
+    # scopes the secrets below to production alone.
+    environment:
+      name: production
+
+    steps:
+      - name: Release
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ vars.SSH_PORT || 22 }}
+          # Without this the remote script's failures are swallowed and the job
+          # reports success for a deploy that did not happen.
+          script_stop: true
+          envs: GITHUB_SHA
+          script: |
+            set -euo pipefail
+            cd "${{ vars.DEPLOY_PATH || '/srv/splitly-api' }}"
+
+            # Remembered before anything changes, so the rollback below has
+            # somewhere to go back to.
+            PREVIOUS=$(git rev-parse HEAD)
+            echo "[deploy] current revision $PREVIOUS"
+
+            git fetch --prune origin
+            # reset, not pull: the server's checkout is a deployment artefact,
+            # not a working copy. A merge conflict from a hand-edit made at 2am
+            # must not be able to stall a release.
+            git reset --hard "$GITHUB_SHA"
+
+            # --omit=dev because nodemon and cross-env have no place in
+            # production; ecosystem.config.js is what makes that safe.
+            npm ci --omit=dev
+
+            # reload, not restart: PM2 brings the replacement up before
+            # retiring the old process, so a release does not drop requests.
+            pm2 reload ecosystem.config.js --update-env
+
+            # Survives a reboot of the box, and only records a process list
+            # that has just been proven to start.
+            pm2 save
+
+            echo "[deploy] waiting for the new process to answer"
+            for i in $(seq 1 30); do
+              if curl -fsS "http://127.0.0.1:${{ vars.APP_PORT || 5000 }}/" > /dev/null; then
+                echo "[deploy] healthy on attempt $i"
+                exit 0
+              fi
+              sleep 2
+            done
+
+            # Reached only if the new revision never answered. The old code is
+            # known to have been serving a minute ago, so going back to it is
+            # strictly better than leaving a dead process up while somebody is
+            # found to look at it.
+            echo "[deploy] FAILED health check — rolling back to $PREVIOUS"
+            git reset --hard "$PREVIOUS"
+            npm ci --omit=dev
+            pm2 reload ecosystem.config.js --update-env
+            exit 1

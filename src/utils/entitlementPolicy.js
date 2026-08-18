@@ -82,7 +82,7 @@ const statusOf = (row, now = new Date()) => {
  * four ways if it happens again.
  */
 const allowancesFor = (plan) =>
-  !isPaidPlan(plan) ? config.entitlement.paid : config.entitlement.free;
+  isPaidPlan(plan) ? config.entitlement.paid : config.entitlement.free;
 
 /**
  * The raw allowance for one feature under one plan.
