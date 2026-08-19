@@ -70,6 +70,7 @@ const trigger = async (why = "content change") => {
   const signal = AbortSignal.timeout(TIMEOUT_MS);
 
   try {
+    logger.warn(`[deploy-hook] ${config.blog.deployHookUrl}`)
     const response = await fetch(config.blog.deployHookUrl, {
       method: "POST",
       // Netlify ignores the body, Vercel ignores it, Cloudflare ignores it. Sent
