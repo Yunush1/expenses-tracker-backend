@@ -24,7 +24,7 @@ const existsByInviteCode = (inviteCode) => Group.exists({ inviteCode });
 const findByJoinCode = (joinCode) =>
   Group.findOne({ joinCode, status: { $ne: GROUP_STATUS.DELETED } });
 
-const existsByJoinCode = (joinCode) => Group.exists({ joinCode });
+const existsByJoinCode = (joinCode) => Group.exists({ joinCode, status: GROUP_STATUS.ACTIVE });
 
 const updateById = (id, update) => Group.findByIdAndUpdate(id, update, { new: true, runValidators: true });
 
