@@ -65,6 +65,26 @@ test("the merge route is registered under a member id", () => {
   assert.notEqual(indexOf(routes, "POST", "/:memberId/merge"), -1);
 });
 
+test("the UPI routes are registered and not shadowed by the bare /:memberId", () => {
+  const routes = routesOf(memberRoutes);
+
+  assert.notEqual(indexOf(routes, "PUT", "/:memberId/upi"), -1);
+  assert.notEqual(indexOf(routes, "DELETE", "/:memberId/upi"), -1);
+
+  /**
+   * `DELETE /:memberId` removes a member from the group, and it is the one
+   * neighbour here whose failure mode is destructive rather than confusing: a
+   * router that read `/abc/upi` as `/:memberId` would delete a person when
+   * somebody meant to delete their payment address.
+   */
+  const upiAt = indexOf(routes, "DELETE", "/:memberId/upi");
+  const removeAt = indexOf(routes, "DELETE", "/:memberId");
+
+  if (removeAt !== -1) {
+    assert.ok(upiAt < removeAt, "DELETE /:memberId/upi is declared after DELETE /:memberId");
+  }
+});
+
 test("join-code lookup is declared before the group mount that would capture it", () => {
   const routes = routesOf(groupRoutes);
   const lookupAt = indexOf(routes, "GET", "/lookup");

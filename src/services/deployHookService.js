@@ -41,6 +41,22 @@ const logger = require("../utils/logger");
  * holding a timer in a process that can be restarted or scaled to two instances,
  * where the failure mode is a build that never fires and a post that is never
  * indexed. The wasted build minutes are cheaper than that.
+ *
+ * ## Why the hook URL is never logged
+ *
+ * The URL *is* the credential. Every host issues it as a secret path — Netlify's
+ * `/build_hooks/<id>`, and `scripts/deploy-hook-server.js` deliberately mirrors
+ * that shape with `/deploy/<DEPLOY_HOOK_SECRET>` — so anyone who can read it can
+ * spend the build minutes of whoever owns it, indefinitely. Application logs are
+ * the wrong place for that: they are tailed on shared boxes, shipped to
+ * aggregators, and pasted into chat windows when something looks wrong.
+ *
+ * Every line below therefore names the *reason* for the build and the *outcome*,
+ * and never the target. That is enough to debug the common failures — a hook
+ * that 404s, one that times out — because those are answered by the status code
+ * and the error, not by re-reading a URL that came from the environment and has
+ * not changed since boot. `scripts/deploy-hook-server.js` makes the same
+ * omission at its own startup, for the same reason.
  */
 
 /** Beyond this, assume the hook is not going to answer and stop waiting. */
@@ -70,7 +86,6 @@ const trigger = async (why = "content change") => {
   const signal = AbortSignal.timeout(TIMEOUT_MS);
 
   try {
-    logger.warn(`[deploy-hook] ${config.blog.deployHookUrl}`)
     const response = await fetch(config.blog.deployHookUrl, {
       method: "POST",
       // Netlify ignores the body, Vercel ignores it, Cloudflare ignores it. Sent

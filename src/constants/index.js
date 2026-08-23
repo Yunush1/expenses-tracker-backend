@@ -791,6 +791,14 @@ const LIMITS = Object.freeze({
   GROUP_NAME_MAX: 80,
   GROUP_DESC_MAX: 500,
   MEMBER_NAME_MAX: 50,
+  /**
+   * A VPA is `identifier@handle` and real ones are well under 40 characters. The
+   * cap is generous rather than tight because the field is optional, self-set and
+   * never parsed for meaning — the only job of a bound here is to stop a member
+   * row being used as free storage. See utils/upi.js for why the *shape* check is
+   * loose too.
+   */
+  UPI_ID_MAX: 100,
   EXPENSE_DESC_MAX: 140,
   /** Personal ledger. Descriptions are terser than a group expense's — nobody else has to understand them. */
   LEDGER_DESC_MAX: 140,

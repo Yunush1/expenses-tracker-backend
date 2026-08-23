@@ -498,6 +498,70 @@ const renameMember = async ({ group, actor, memberId, name }) => {
   return toMemberDTO(updated, actor._id);
 };
 
+/* ------------------------------ Payment address --------------------------- */
+
+/**
+ * Set or clear this member's UPI id (docs/16-TODO.md §2.4).
+ *
+ * ## Why only the member themselves, when the creator may rename anyone
+ *
+ * Renaming somebody is a label the group agrees on, and the creator doing it for
+ * a flatmate who never opened the link is the feature working as intended. A
+ * payment address is not a label — it is a claim about the outside world, and one
+ * person putting a bank handle on another person's row is precisely the abuse
+ * this feature could otherwise enable. `isCreator` grants nothing here, and that
+ * asymmetry is deliberate rather than an oversight.
+ *
+ * The practical consequence is worth stating: a member who has never opened the
+ * link cannot have a UPI id, and cannot be given one. Their transfer row keeps
+ * the behaviour it has today, which is exactly what §2.4 asks for — "a member
+ * with no UPI id sees today's behaviour with no empty state".
+ *
+ * ## Why this does not record an activity
+ *
+ * Every other member write funnels through `activityService.record`, which is
+ * also what bumps the cache. This one deliberately does not, because `record`
+ * fans out a push notification to every device in the group and awards reward
+ * points. Waking five people's phones to tell them somebody edited their own
+ * payment details is noise at best; at worst it broadcasts a change to a personal
+ * financial identifier into a shared feed that anyone holding the invite link can
+ * read. The group learns about it the way it should — a Pay button appears on the
+ * rows where it is useful.
+ *
+ * The cost of stepping outside that funnel is that the cache bump has to be made
+ * by hand, which is the failure mode cacheService.js warns about. It is the line
+ * below, and it is why `listMembers` does not serve a stale row for five minutes
+ * after somebody adds an address.
+ */
+const setUpiId = async ({ group, actor, memberId, upiId }) => {
+  const member = await memberRepository.findById(group._id, memberId);
+
+  if (!member || !member.isActive) {
+    throw new NotFoundError("Member not found", ERROR_CODES.MEMBER_NOT_FOUND);
+  }
+
+  if (String(member._id) !== String(actor._id)) {
+    throw new ForbiddenError(
+      "You can only add a UPI id to your own name",
+      ERROR_CODES.CREATOR_ONLY
+    );
+  }
+
+  /**
+   * `upiId: null` clears it. The validator already normalised and checked
+   * anything non-null, so this is the last place either shape can arrive and
+   * neither needs re-parsing.
+   */
+  const updated = await memberRepository.updateById(group._id, member._id, {
+    $set: { upiId: upiId || null },
+  });
+
+  // Not awaited — a cache that fails to clear must never fail the write.
+  cacheService.bumpGroup(group._id);
+
+  return toMemberDTO(updated, actor._id);
+};
+
 /**
  * Removal is refused for anyone who appears in a live expense or settlement.
  *
@@ -704,6 +768,7 @@ module.exports = {
   mergeMembers,
   addMember,
   renameMember,
+  setUpiId,
   removeMember,
   buildNameMap,
 };

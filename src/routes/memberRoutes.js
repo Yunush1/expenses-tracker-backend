@@ -12,6 +12,7 @@ const {
   claimMemberSchema,
   linkDeviceSchema,
   mergeMemberSchema,
+  upiIdSchema,
 } = require("../validators/memberValidators");
 
 // mergeParams so :inviteCode from the parent router stays visible here.
@@ -108,6 +109,35 @@ router.post(
   requireMember,
   validate(addMemberSchema),
   memberController.addMember
+);
+
+/**
+ * A member's own payment address (docs/16-TODO.md §2.4).
+ *
+ * `requireMember` and nothing more: the ownership check is in the service, which
+ * refuses any row but the caller's own — creator included. Putting it there
+ * rather than in a middleware keeps the one rule that makes this feature safe in
+ * the same file as the write it guards, where anyone changing the write will
+ * read it.
+ *
+ * Declared above `/:memberId` for the same reason as `/merge` — Express matches
+ * in declaration order, and this file has been bitten by that before.
+ */
+router.put(
+  "/:memberId/upi",
+  writeLimiter,
+  requireActiveGroup,
+  requireMember,
+  validate(upiIdSchema),
+  memberController.setUpiId
+);
+
+router.delete(
+  "/:memberId/upi",
+  writeLimiter,
+  requireActiveGroup,
+  requireMember,
+  memberController.clearUpiId
 );
 
 // Declared before "/:memberId" routes that could otherwise swallow it.

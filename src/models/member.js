@@ -78,6 +78,43 @@ const memberSchema = new mongoose.Schema(
       trim: true,
       default: generateMemberCode,
     },
+    /**
+     * Where to send this person money — a UPI id, opt-in (docs/16-TODO.md §2.4).
+     *
+     * ## Why this is on the member and not on the user
+     *
+     * Most members have no account, and the flatmate who needs paying is exactly
+     * the one least likely to have signed up. Hanging the address off `userId`
+     * would mean the feature worked only for the people who least need it.
+     *
+     * The cost of that choice is stated plainly: someone in three groups sets it
+     * three times, and changing banks means changing it three times. That is
+     * worse than one record per human — and it is still right, because the
+     * alternative is a feature that does nothing in a group with no accounts,
+     * which is most groups.
+     *
+     * ## What it exposes
+     *
+     * The invite link is a capability URL, so everyone holding it can read this
+     * (docs/02-HLD.md §3.4). That is a real escalation of what a leaked link is
+     * worth — names and amounts before, a payment handle after — and it is the
+     * reason the field is **opt-in per member, never inferred, never required**,
+     * settable only by that member, and described in the UI by exactly who can
+     * see it. A group that would rather not carry one simply does not set one,
+     * and every screen behaves as it did before the field existed.
+     *
+     * `null` rather than `""` for "not set", so the two never have to be told
+     * apart. Stored lower-cased by `utils/upi.js` — a VPA is case-insensitive,
+     * and two spellings of one address is a comparison that fails later for no
+     * visible reason.
+     */
+    upiId: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      maxlength: LIMITS.UPI_ID_MAX,
+      default: null,
+    },
     isCreator: {
       type: Boolean,
       default: false,

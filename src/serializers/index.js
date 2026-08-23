@@ -113,6 +113,26 @@ const toMemberDTO = (member, currentMemberId = null) => {
      * (docs/18-USER-CODE.md).
      */
     memberCode: member.memberCode || null,
+    /**
+     * Where to send this person money, or null (docs/16-TODO.md §2.4).
+     *
+     * Readable by everyone in the group, which is the whole point — the payer
+     * needs the payee's address, and a field only its owner could see would make
+     * the feature do nothing. What that costs is the same trade `memberCode`
+     * above makes and one step further: the invite link is a capability URL
+     * (docs/02-HLD.md §3.4), so anyone holding it reads every member's payment
+     * handle as well as their name.
+     *
+     * That is a genuine escalation of what a leaked link is worth, and it is why
+     * the field is opt-in, never inferred, never required, and settable only by
+     * the member themselves (memberService.setUpiId). A group that would rather
+     * not carry one sets none, and every screen behaves as it did before.
+     *
+     * Deliberately **absent from `toPublicMemberDTO`**, which is the pre-join
+     * preview. That screen carries no financial data at all, and somebody who has
+     * not joined has nobody to pay.
+     */
+    upiId: member.upiId || null,
     joinedAt: member.joinedAt,
   };
 };

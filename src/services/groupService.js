@@ -203,7 +203,17 @@ const createGroup = async ({ name, description, creatorName, deviceId, currency,
     metadata: { memberId: String(member._id) },
   });
 
-  logger.info(`[groupService] Created group ${group._id} (${inviteCode})`);
+  /**
+   * The id, never the invite code.
+   *
+   * The code is a capability: possession of it *is* member-level access to this
+   * group (docs/02-HLD.md §3.4). Writing it here would put a working credential
+   * for every group ever created into a log file — one that gets tailed on a
+   * shared box, shipped to an aggregator, and kept far longer than any group is
+   * interesting for. The `_id` identifies the row for anyone debugging and grants
+   * nothing on its own, which is the whole difference.
+   */
+  logger.info(`[groupService] Created group ${group._id}`);
 
   return {
     group: toGroupDTO(group),

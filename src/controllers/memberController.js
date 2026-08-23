@@ -144,6 +144,34 @@ exports.renameMember = asyncHandler(async (req, res) => {
   return ok(res, { member }, "Member renamed");
 });
 
+/**
+ * Two verbs, one field. `PUT` sets an address, `DELETE` removes it — rather than
+ * a `PATCH` that treats an empty string as "clear", which is two meanings for one
+ * request body and the kind of thing a client gets wrong by sending a blank input
+ * it never meant to submit.
+ */
+exports.setUpiId = asyncHandler(async (req, res) => {
+  const member = await memberService.setUpiId({
+    group: req.group,
+    actor: req.member,
+    memberId: req.params.memberId,
+    upiId: req.body.upiId,
+  });
+
+  return ok(res, { member }, "UPI id saved");
+});
+
+exports.clearUpiId = asyncHandler(async (req, res) => {
+  const member = await memberService.setUpiId({
+    group: req.group,
+    actor: req.member,
+    memberId: req.params.memberId,
+    upiId: null,
+  });
+
+  return ok(res, { member }, "UPI id removed");
+});
+
 exports.removeMember = asyncHandler(async (req, res) => {
   await memberService.removeMember({
     group: req.group,
