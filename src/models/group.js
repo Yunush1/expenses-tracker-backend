@@ -33,6 +33,24 @@ const groupSchema = new mongoose.Schema(
       default: null,
       uppercase: true,
     },
+    /**
+     * The short code this group had when it was deleted.
+     *
+     * Deleting hands the live `joinCode` back so somebody can reuse `ROOM405`
+     * immediately (see `groupService.deleteGroup`) — but the creator can restore a
+     * deleted group, and a restore that silently dropped the code would be a
+     * restore that did not restore it. Kept here, outside the unique index, so it
+     * reserves nothing while it waits.
+     *
+     * Re-claimed on restore **only if still free**: releasing it means somebody
+     * else may have taken it in the meantime, and their live group outranks a
+     * deleted one's memory of it.
+     */
+    releasedJoinCode: {
+      type: String,
+      default: null,
+      uppercase: true,
+    },
     currency: {
       type: String,
       default: DEFAULT_CURRENCY,

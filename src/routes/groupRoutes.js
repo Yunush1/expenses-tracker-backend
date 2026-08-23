@@ -25,6 +25,7 @@ const {
 } = require("../middlewares/rateLimiter");
 const {
   loadGroup,
+  loadGroupIncludingDeleted,
   resolveMember,
   requireMember,
   requireCreator,
@@ -84,6 +85,27 @@ router.post(
 );
 router.get("/join-requests/:requestId", joinRequestController.getStatus);
 router.delete("/join-requests/:requestId", joinRequestController.cancel);
+
+/**
+ * Undo a delete — the one route that must see a deleted group.
+ *
+ * Declared **above** the `loadGroup` mount below, because that guard answers 410
+ * for a deleted group and would refuse this before it ran. It brings its own
+ * chain instead: `loadGroupIncludingDeleted` to see the row at all,
+ * `resolveMember` to find who is asking — members survive a delete, so the
+ * creator is still resolvable — and `requireCreator`, because only the person who
+ * could delete it may put it back (docs/02-HLD.md §3.4).
+ *
+ * Not behind `requireActiveGroup`, for the obvious reason.
+ */
+router.post(
+  "/:inviteCode/restore",
+  writeLimiter,
+  loadGroupIncludingDeleted,
+  resolveMember,
+  requireCreator,
+  groupController.restoreGroup
+);
 
 // Everything below is scoped to one group. `loadGroup` + `resolveMember` run for
 // every route: reads are open to anyone with the link, writes add their own guards.

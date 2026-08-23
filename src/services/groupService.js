@@ -359,11 +359,123 @@ const archiveGroup = async ({ group, actor }) => {
   return toGroupDTO(updated);
 };
 
-/** Soft delete — data is retained, every route thereafter returns 410. */
+/**
+ * Soft delete — data is retained, every route thereafter returns 410.
+ *
+ * ## Why the join code is handed back and the invite code is not
+ *
+ * They look alike and are opposite kinds of thing.
+ *
+ * The **join code** is scarce and human-chosen: `ROOM405`, `GOA2026`, the flat
+ * number. Somebody picks it because it is the obvious name for that group, which
+ * means the next group they make usually wants the same one. Keeping it reserved
+ * after deletion makes it *invisible and unusable at once* — `lookupByJoinCode`
+ * refuses a deleted group, so the code finds nothing, while the unique index in
+ * `models/group.js` still holds it, so it cannot be taken either. The code is
+ * simply dead, and nothing in the product can ever bring it back: recovery only
+ * finds ACTIVE groups (`groupRecoveryService`) and there is no un-delete. Holding
+ * it protects nobody and costs the one person who wants it most.
+ *
+ * The **invite code** stays. It is this row's identity — every route resolves a
+ * group by it, including the ones that answer 410 Gone, and clearing it would turn
+ * a deleted group into a 404 that says nothing rather than a "this group was
+ * deleted" that says what happened. It is also 16 random characters, so reserving
+ * it forever denies no one anything they wanted.
+ *
+ * Archived groups keep both. An archived group still exists and is still readable;
+ * only a deleted one is past tense.
+ */
 const deleteGroup = async ({ group }) => {
-  await groupRepository.setStatus(group._id, GROUP_STATUS.DELETED);
+  await groupRepository.updateById(group._id, {
+    $set: {
+      status: GROUP_STATUS.DELETED,
+      joinCode: null,
+      // Handed back, but not forgotten — `restoreGroup` re-claims it if it is
+      // still free. Outside the unique index, so remembering costs nobody.
+      releasedJoinCode: group.joinCode || null,
+    },
+  });
   logger.info(`[groupService] Deleted group ${group._id}`);
   return true;
+};
+
+/**
+ * Un-delete a group. Creator only.
+ *
+ * ## Why this exists
+ *
+ * Deleting is a soft delete and always has been — the rows survive and every
+ * route answers 410 Gone. But nothing could turn it back on, so "soft" described
+ * only what the database did, not anything a person could reach: the group
+ * recovery flow (`groupRecoveryService`) re-links a device to groups it is still
+ * a member of and looks exclusively at ACTIVE ones, so a deleted group was as
+ * gone to its own creator as a hard-deleted one, while still occupying storage
+ * and — until this change — its short code.
+ *
+ * A group is a shared record of who owes whom. Deleting one is the single most
+ * destructive act the API offers and the one most likely to be a misclick, and it
+ * takes the history away from *every* member, not only the person who pressed it.
+ * An undo is the proportionate answer.
+ *
+ * ## Creator only, and why membership is not enough
+ *
+ * Only the creator may delete, so only the creator may undo. Letting any member
+ * restore would let a leaked invite link resurrect a group the creator
+ * deliberately removed, which inverts the point of deleting it —
+ * `docs/02-HLD.md §3.4` keeps destructive operations creator-scoped for exactly
+ * this reason.
+ *
+ * ## The join code comes back only if nobody took it
+ *
+ * Deletion releases the short code immediately, on purpose: `ROOM405` is the
+ * obvious name for the flat and holding it hostage against a restore that may
+ * never come is the wrong trade. The consequence is that a restore may find it
+ * gone, and when it does the live group keeps it — a group that exists outranks a
+ * deleted one's memory. The restore still succeeds and the caller is told
+ * plainly, because the invite link is unaffected and the link is how people
+ * actually get in.
+ */
+const restoreGroup = async ({ group, actor }) => {
+  if (group.status !== GROUP_STATUS.DELETED) {
+    throw new ConflictError("This group is not deleted", ERROR_CODES.GROUP_NOT_DELETED);
+  }
+
+  const wanted = group.releasedJoinCode || null;
+  // Free only if no *other* group holds it — this row's own code is already null.
+  const joinCode = wanted && !(await groupRepository.existsByJoinCode(wanted)) ? wanted : null;
+
+  const updated = await groupRepository.updateById(group._id, {
+    $set: {
+      status: GROUP_STATUS.ACTIVE,
+      joinCode,
+      releasedJoinCode: null,
+      // So a restored group sorts as recently touched rather than sinking to
+      // wherever it was when it was deleted.
+      lastActivityAt: new Date(),
+    },
+  });
+
+  await activityService.record({
+    groupId: group._id,
+    type: ACTIVITY_TYPES.GROUP_RESTORED,
+    actor,
+    message: `${actor.name} restored the group`,
+    metadata: {},
+  });
+
+  logger.info(`[groupService] Restored group ${group._id}`);
+
+  return {
+    group: toGroupDTO(updated),
+    /**
+     * Said out loud rather than left for someone to discover. A creator who
+     * restores "Flat 4B" and finds the code they read out to everybody now
+     * belongs to a stranger's group should hear it from us, at the moment it
+     * happens, not from a flatmate who ended up somewhere else.
+     */
+    joinCodeRestored: Boolean(joinCode),
+    joinCodeLost: Boolean(wanted && !joinCode) ? wanted : null,
+  };
 };
 
 module.exports = {
@@ -374,5 +486,6 @@ module.exports = {
   updateGroup,
   archiveGroup,
   deleteGroup,
+  restoreGroup,
   buildInviteUrl,
 };

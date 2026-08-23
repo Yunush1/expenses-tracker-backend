@@ -26,7 +26,52 @@ const loadGroup = asyncHandler(async (req, res, next) => {
   }
 
   if (group.status === GROUP_STATUS.DELETED) {
-    throw new GoneError("This group has been deleted", ERROR_CODES.GROUP_DELETED);
+    /**
+     * 410, but not a dead end for the one person who can undo it.
+     *
+     * Deleting is a soft delete, and the creator may restore it
+     * (`groupService.restoreGroup`). The client cannot know that from a bare 410 —
+     * and it cannot ask, because every route on this group answers the same 410 —
+     * so the one fact that makes the next step possible travels with the refusal.
+     *
+     * Costs a member lookup on a path that is already rare, and discloses nothing
+     * to anyone else: a non-creator, and anyone holding the link who was never a
+     * member, gets `canRestore: false` and the same message they got before.
+     */
+    const error = new GoneError("This group has been deleted", ERROR_CODES.GROUP_DELETED);
+
+    const member = req.deviceId
+      ? await memberRepository.findByDevice(group._id, req.deviceId)
+      : null;
+
+    error.details = { canRestore: Boolean(member?.isCreator), name: group.name };
+    throw error;
+  }
+
+  req.group = group;
+  return next();
+});
+
+/**
+ * `:inviteCode` → `req.group`, *including* a deleted one.
+ *
+ * Only the restore route mounts this, and it is deliberately a separate export
+ * rather than a flag on `loadGroup`: a boolean parameter on the guard that keeps
+ * deleted groups out of every other route is one wrong argument away from
+ * exposing them all, and the wrong argument would look entirely reasonable at the
+ * call site.
+ */
+const loadGroupIncludingDeleted = asyncHandler(async (req, res, next) => {
+  const { inviteCode } = req.params;
+
+  if (!isValidInviteCode(inviteCode)) {
+    throw new NotFoundError("Group not found", ERROR_CODES.GROUP_NOT_FOUND);
+  }
+
+  const group = await groupRepository.findByInviteCode(inviteCode);
+
+  if (!group) {
+    throw new NotFoundError("Group not found", ERROR_CODES.GROUP_NOT_FOUND);
   }
 
   req.group = group;
@@ -72,4 +117,11 @@ const requireActiveGroup = (req, res, next) => {
   return next();
 };
 
-module.exports = { loadGroup, resolveMember, requireMember, requireCreator, requireActiveGroup };
+module.exports = {
+  loadGroup,
+  loadGroupIncludingDeleted,
+  resolveMember,
+  requireMember,
+  requireCreator,
+  requireActiveGroup,
+};

@@ -49,3 +49,20 @@ exports.deleteGroup = asyncHandler(async (req, res) => {
   await groupService.deleteGroup({ group: req.group, actor: req.member });
   return ok(res, null, "Group deleted");
 });
+
+/**
+ * Undo a delete. Creator only — see `groupService.restoreGroup`.
+ *
+ * The message says what happened to the short code, because that is the one part
+ * of a restore that can silently come back different: it is released on delete so
+ * somebody else can use it, and by now somebody may have.
+ */
+exports.restoreGroup = asyncHandler(async (req, res) => {
+  const payload = await groupService.restoreGroup({ group: req.group, actor: req.member });
+
+  const message = payload.joinCodeLost
+    ? `Group restored. The code ${payload.joinCodeLost} was taken while it was deleted, so the group has none — share the invite link, or set a new code.`
+    : "Group restored";
+
+  return ok(res, payload, message);
+});
