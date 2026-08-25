@@ -36,7 +36,7 @@ const logger = require("./logger");
  */
 
 const EXTENSIONS = Object.freeze({
-  "image/jpeg": "jpg",
+  "image/jpeg": "jpeg",
   "image/jpg": "jpg",
   "image/png": "png",
   "image/webp": "webp",
