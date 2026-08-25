@@ -75,15 +75,15 @@ const start = async () => {
       // Sockets are closed first: an open WebSocket keeps the server's handle
       // alive, so `server.close()` would otherwise wait for every connected
       // client to leave of its own accord before the callback ever ran.
-      await closeRealtime().catch(() => {});
+      await closeRealtime().catch(() => { });
       // Quit rather than drop the socket, so Redis is not left holding a
       // connection until it times out on its own.
-      await closeRedis().catch(() => {});
+      await closeRedis().catch(() => { });
       process.exit(0);
     });
     // Belt and braces: tell live sockets to go now, rather than relying on the
     // close callback to fire promptly on a busy sheet.
-    closeRealtime().catch(() => {});
+    closeRealtime().catch(() => { });
   };
 
   process.on("SIGTERM", shutdown("SIGTERM"));

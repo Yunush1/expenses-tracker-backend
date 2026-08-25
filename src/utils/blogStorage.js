@@ -84,7 +84,7 @@ const save = async (dataUrl) => {
   const [, mime, base64] = match;
   const extension = EXTENSIONS[mime];
   if (!extension) throw new Error("Unsupported image type");
-
+  logger.info(`[BlogStorage] Unsupported image type: ${mine}`)
   const bytes = Buffer.from(base64.replace(/\s/g, ""), "base64");
 
   /**
@@ -97,6 +97,7 @@ const save = async (dataUrl) => {
    */
   if (bytes.length > config.blog.maxImageBytes) {
     const mb = (config.blog.maxImageBytes / (1024 * 1024)).toFixed(1);
+    logger.info(`[BlogStorage] That image is tool large ${mb}`)
     throw new Error(`That image is too large. The limit is ${mb} MB.`);
   }
 
