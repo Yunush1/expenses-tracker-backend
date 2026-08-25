@@ -84,7 +84,7 @@ const save = async (dataUrl) => {
   const [, mime, base64] = match;
   const extension = EXTENSIONS[mime];
   if (!extension) throw new Error("Unsupported image type");
-  logger.info(`[BlogStorage] Unsupported image type: ${mine}`)
+  logger.info(`[BlogStorage] Unsupported image type: ${mime}`)
   const bytes = Buffer.from(base64.replace(/\s/g, ""), "base64");
 
   /**
