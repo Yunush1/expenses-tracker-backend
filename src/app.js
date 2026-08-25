@@ -140,9 +140,35 @@ if (config.receipts.enabled) {
       redirect: false,
       immutable: true,
       maxAge: "365d",
-      // Nothing here is ever an executable or a page; a browser that decides
-      // otherwise about an uploaded file is the classic stored-XSS route.
-      setHeaders: (res) => res.setHeader("X-Content-Type-Options", "nosniff"),
+      setHeaders: (res) => {
+        // Nothing here is ever an executable or a page; a browser that decides
+        // otherwise about an uploaded file is the classic stored-XSS route.
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        /**
+         * Overrides helmet's default of `same-origin`, which broke every photo
+         * in the app.
+         *
+         * The frontend is served from another origin — splitly.shop against
+         * api.splitly.shop in production, :5173 against :5000 in development —
+         * so `same-origin` told the browser to refuse the bytes to any `<img>`
+         * on the site that uploaded them. The symptom is confusing enough to be
+         * worth naming: the URL opens perfectly in a new tab, because CORP does
+         * not apply to a top-level navigation, and only fails when embedded.
+         *
+         * `cross-origin` gives up nothing here, because CORP was never what
+         * protects these files. **The filename is the credential** — 128 random
+         * bits, as the note above says — and CORP does not stop anyone who has a
+         * URL from opening it, fetching it server-side, or saving it. It only
+         * stops *embedding*, which is a hotlinking control, and hotlinking an
+         * address nobody can guess is not a threat.
+         *
+         * `same-site` would be the tighter choice for this mount and is
+         * deliberately not used: it would break any deployment that puts the API
+         * on a different registrable domain than the site, which
+         * `VITE_API_BASE_URL` exists to allow.
+         */
+        res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+      },
     })
   );
 }
@@ -168,9 +194,23 @@ if (config.blog.imagesEnabled) {
       redirect: false,
       immutable: true,
       maxAge: "365d",
-      // An uploaded file a browser decides to treat as a document is the classic
-      // stored-XSS route. Nothing in here is ever a page.
-      setHeaders: (res) => res.setHeader("X-Content-Type-Options", "nosniff"),
+      setHeaders: (res) => {
+        // An uploaded file a browser decides to treat as a document is the
+        // classic stored-XSS route. Nothing in here is ever a page.
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        /**
+         * Same override as the receipts mount, and here it is not even a
+         * trade-off: these images are published on purpose. They are the cover
+         * on an article, the card in a shared link, the thumbnail in a search
+         * result — every one of those is an embed from an origin that is not
+         * this one, which is exactly what helmet's `same-origin` default
+         * forbids.
+         *
+         * It is the same reasoning that already relaxes `X-Robots-Tag` and
+         * `Referrer-Policy` for this path above.
+         */
+        res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+      },
     })
   );
 }
