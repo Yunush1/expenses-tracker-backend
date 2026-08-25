@@ -51,6 +51,20 @@ class GoneError extends ApiError {
 }
 
 /**
+ * The body was larger than the route accepts.
+ *
+ * Thrown by the upload paths, and also produced by `error.middleware.js` when
+ * body-parser refuses a stream before any handler sees it. Both need to arrive
+ * at the client as the same thing: a 413 carrying a sentence a person can act on,
+ * rather than the 500 "Something went wrong" that an unrecognised error becomes.
+ */
+class PayloadTooLargeError extends ApiError {
+  constructor(message = "That upload is too large", code = ERROR_CODES.PAYLOAD_TOO_LARGE) {
+    super(message, 413, code);
+  }
+}
+
+/**
  * The feature exists but this deployment cannot serve it — Firebase is not
  * configured, so nothing can verify a token. Distinct from 500 because nothing
  * has failed, and distinct from 404 because the route is real: it tells an
@@ -71,5 +85,6 @@ module.exports = {
   NotFoundError,
   ConflictError,
   GoneError,
+  PayloadTooLargeError,
   ServiceUnavailableError,
 };

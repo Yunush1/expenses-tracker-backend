@@ -3,6 +3,7 @@ const fs = require("fs/promises");
 const path = require("path");
 
 const config = require("../config/env");
+const { BadRequestError, PayloadTooLargeError, ServiceUnavailableError } = require("../errors");
 const logger = require("./logger");
 
 /**
@@ -72,19 +73,30 @@ const isEnabled = () => config.blog.imagesEnabled;
  * let the editor say so.
  */
 const save = async (dataUrl) => {
+  /**
+   * Typed errors throughout, for the reason spelled out at the size check below:
+   * `error.middleware.js` turns anything that is not an `ApiError` into a 500
+   * and "Something went wrong", so a plain `throw` here would hide the one
+   * sentence that tells the author what to do differently.
+   */
   if (!isEnabled()) {
-    throw new Error("Blog image uploads are disabled on this server");
+    throw new ServiceUnavailableError("Blog image uploads are disabled on this server");
   }
 
   const match = DATA_URL.exec(String(dataUrl || ""));
   if (!match) {
-    throw new Error("Unsupported image. Use JPEG, PNG, WebP, GIF or AVIF.");
+    throw new BadRequestError("Unsupported image. Use JPEG, PNG, WebP, GIF or AVIF.");
   }
 
   const [, mime, base64] = match;
   const extension = EXTENSIONS[mime];
-  if (!extension) throw new Error("Unsupported image type");
-  logger.info(`[BlogStorage] Unsupported image type: ${mime}`)
+  if (!extension) {
+    // The log belongs here, not after the guard — where it sat, it announced
+    // "Unsupported image type" for every image that was in fact supported.
+    logger.info(`[blog] Rejected an unsupported image type: ${mime}`);
+    throw new BadRequestError("Unsupported image type");
+  }
+
   const bytes = Buffer.from(base64.replace(/\s/g, ""), "base64");
 
   /**
@@ -97,8 +109,15 @@ const save = async (dataUrl) => {
    */
   if (bytes.length > config.blog.maxImageBytes) {
     const mb = (config.blog.maxImageBytes / (1024 * 1024)).toFixed(1);
-    logger.info(`[BlogStorage] That image is tool large ${mb}`)
-    throw new Error(`That image is too large. The limit is ${mb} MB.`);
+    logger.info(`[blog] Rejected an image over the ${mb} MB limit (${bytes.length} bytes)`);
+    /**
+     * A typed error, not a plain one. `error.middleware.js` treats anything that
+     * is not an `ApiError` as an unexpected fault: it answers 500 "Something
+     * went wrong" and logs a stack trace, which is the wrong response to a
+     * caller who did nothing but pick a big photograph — and it buries the one
+     * sentence that tells them how to fix it.
+     */
+    throw new PayloadTooLargeError(`That image is too large. The limit is ${mb} MB.`);
   }
 
   const dir = storageDir();

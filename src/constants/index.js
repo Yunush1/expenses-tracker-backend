@@ -1062,6 +1062,14 @@ const ERROR_CODES = Object.freeze({
 
   DUPLICATE: "DUPLICATE",
   RATE_LIMITED: "RATE_LIMITED",
+  /**
+   * The request body was bigger than the route accepts.
+   *
+   * Worth a code of its own because the client can act on it — an editor
+   * can say "that image is too big" and offer to re-compress, which is a
+   * different screen from any other 4xx. See docs/23-BLOG.md §9.
+   */
+  PAYLOAD_TOO_LARGE: "PAYLOAD_TOO_LARGE",
   ORIGIN_NOT_ALLOWED: "ORIGIN_NOT_ALLOWED",
   INTERNAL_ERROR: "INTERNAL_ERROR",
 });

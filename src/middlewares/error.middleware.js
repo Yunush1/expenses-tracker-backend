@@ -35,6 +35,23 @@ module.exports = (err, req, res, next) => {
     statusCode = 409;
     code = ERROR_CODES.DUPLICATE;
     message = "That record already exists";
+  } else if (err?.type === "entity.too.large") {
+    /**
+     * body-parser refused the stream before any route ran.
+     *
+     * Without this branch it is an unrecognised error, which means a 500 and
+     * "Something went wrong" — for the one failure whose cause is completely
+     * knowable and whose fix is entirely in the caller's hands. The limits are
+     * per-route and set in app.js.
+     *
+     * Note what this branch cannot catch: a body large enough for the *reverse
+     * proxy* to reject is answered by nginx, in HTML, and never reaches Node at
+     * all. If uploads fail with a 413 that has no JSON body, the limit that
+     * needs raising is `client_max_body_size` — see deploy/nginx.conf.
+     */
+    statusCode = 413;
+    code = ERROR_CODES.PAYLOAD_TOO_LARGE;
+    message = "That upload is too large";
   } else if (err?.isCorsError) {
     statusCode = 403;
     code = ERROR_CODES.ORIGIN_NOT_ALLOWED;
