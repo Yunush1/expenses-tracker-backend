@@ -256,8 +256,8 @@ app.use("/api/sheets", express.json({ limit: "1mb" }));
  * the global limit, so nothing anonymous gains a larger buffer to be flooded
  * with.
  */
-app.use("/api/blog/admin/images", express.json({ limit: "8mb" }));
-app.use("/api/blog/admin", express.json({ limit: "1mb" }));
+app.use("/api/blog/admin/images", express.json({ limit: "10mb" }));
+app.use("/api/blog/admin", express.json({ limit: "10mb" }));
 
 /**
  * The one route that carries a photograph, and nothing else does.
