@@ -8,10 +8,17 @@ const pointsRoutes = require("./pointsRoutes");
 const referralRoutes = require("./referralRoutes");
 const sheetRoutes = require("./sheetRoutes");
 const blogRoutes = require("./blogRoutes");
+const rateRoutes = require("./rateRoutes");
 
 const router = express.Router();
 
 router.use("/groups", groupRoutes);
+/**
+ * Exchange rates (docs/27-MULTI-CURRENCY.md). Public and account-free, because
+ * the calculators that use it have no account and no group — and because the
+ * answer is identical for every caller, so there is nothing to scope.
+ */
+router.use("/rates", rateRoutes);
 // Device-scoped, not group-scoped: one browser, one token, every group it is in.
 router.use("/push", pushRoutes);
 /**
