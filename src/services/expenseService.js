@@ -1,4 +1,6 @@
 const { withTransaction } = require("../config/db");
+const config = require("../config/env");
+const { describeWritability, earliestWritableDate } = require("../utils/expensePeriod");
 const groupRepository = require("../repositories/groupRepository");
 const memberRepository = require("../repositories/memberRepository");
 const expenseRepository = require("../repositories/expenseRepository");
@@ -86,7 +88,40 @@ const storedSplitValues = (expense) =>
     value: entry.value,
   }));
 
+/**
+ * Refuse a write to a month that has closed.
+ *
+ * Enforced here rather than in a validator because it applies to three different
+ * shapes — a create carries a date, an update may change one, a delete has only
+ * the stored row — and because a rule about *money* belongs where the money is
+ * written, not where a request body is checked.
+ *
+ * **Settlements deliberately do not pass through this.** Paying an August debt in
+ * November is ordinary (docs/14-PERIODS.md §3); locking it would leave a debt the
+ * app insists on and refuses to let anyone clear.
+ */
+const assertPeriodOpen = (date) => {
+  /**
+   * An omitted date means today, which is always inside the open month — the
+   * service defaults it the same way a few lines below. Passing `undefined`
+   * through to `Intl` instead throws `RangeError: Invalid time value`, so this is
+   * the difference between the guard working and every dateless expense
+   * returning a 500.
+   */
+  if (date === undefined || date === null) return;
+
+  const parsed = new Date(date);
+  if (Number.isNaN(parsed.getTime())) return; // the validator rejects these first
+
+  const verdict = describeWritability(parsed, new Date(), config.expensePeriod);
+  if (verdict.writable) return;
+
+  throw new ForbiddenError(verdict.message, ERROR_CODES.PERIOD_LOCKED);
+};
+
 const createExpense = async ({ group, actor, dto }) => {
+  assertPeriodOpen(dto.expenseDate);
+
   // Idempotency: a retried or double-tapped submit returns the original expense
   // rather than charging the group twice.
   if (dto.clientRequestId) {
@@ -188,6 +223,8 @@ const createExpense = async ({ group, actor, dto }) => {
  * in a transaction; on a standalone mongod, validate-first is the guarantee.
  */
 const createExpenseBatch = async ({ group, actor, dto }) => {
+  assertPeriodOpen(dto.expenseDate);
+
   const { paidBy, expenseDate, items } = dto;
   const date = expenseDate || new Date();
 
@@ -330,6 +367,14 @@ const updateExpense = async ({ group, actor, expenseId, dto }) => {
 
   assertCanModify(existing, actor);
 
+  /**
+   * Both ends are checked: an expense may not be edited *out of* a closed month
+   * nor moved *into* one. Checking only the new date would let a locked August
+   * row be dragged into September and rewritten.
+   */
+  assertPeriodOpen(existing.expenseDate);
+  if (dto.expenseDate) assertPeriodOpen(dto.expenseDate);
+
   if (existing.version !== dto.version) {
     throw new ConflictError(
       "This expense was changed by someone else. Reload and try again.",
@@ -468,6 +513,9 @@ const deleteExpense = async ({ group, actor, expenseId }) => {
   }
 
   assertCanModify(existing, actor);
+  // Deleting is an edit: removing an expense changes the month's total and every
+  // balance derived from it.
+  assertPeriodOpen(existing.expenseDate);
 
   const deleted = await expenseRepository.softDelete(group._id, expenseId, actor._id);
 
@@ -553,6 +601,15 @@ const listPeriods = async (group) => {
       totalMinor: months.reduce((sum, month) => sum + month.totalMinor, 0),
       count: months.reduce((sum, month) => sum + month.count, 0),
     },
+    /**
+     * The floor for a date picker: `YYYY-MM-DD`, the oldest day still writable.
+     *
+     * Sent so the client does not have to reimplement the lock to know where it
+     * falls. Without it a picker offers July, the person fills the whole form,
+     * and the refusal arrives on submit — which is the same answer delivered at
+     * the most annoying moment.
+     */
+    writableFrom: earliestWritableDate(new Date(), config.expensePeriod),
   };
 };
 

@@ -68,10 +68,34 @@ const buildStore = (name) => {
   }
 };
 
-const build = (name, windowMs, max, message) =>
+/**
+ * Count per browser where that is fair, per IP where it has to be safe.
+ *
+ * **The problem:** limits keyed on IP are shared by everyone behind one address.
+ * Ten friends splitting a dinner on the same Wi-Fi are one key, so the global
+ * limit of 300 requests per 15 minutes became about 20 each — which a group page
+ * and a few refetches will spend. They then saw failures on a working group,
+ * which is the report this exists to fix.
+ *
+ * **Why not use it everywhere:** `X-Device-Id` is supplied by the client. Anyone
+ * can send a fresh UUID per request, so a device-keyed limit stops accidents and
+ * nothing else. That is fine for the generous limiters, whose job is to keep one
+ * enthusiastic browser from hammering the API. It is useless for
+ * `codeLookupLimiter`, which is the entire defence on a ~37-bit join code
+ * (docs/02-HLD.md §3.4) — an attacker rotating a header would walk straight
+ * through it. Those stay on IP, and `networkLimiter` below puts a ceiling over
+ * the device-keyed ones so rotation cannot buy unlimited traffic either.
+ *
+ * The prefixes matter: without them a UUID and an IP share one keyspace, and a
+ * caller could pick a device id that collides with somebody's address.
+ */
+const byDeviceThenIp = (req) => (req.deviceId ? `d:${req.deviceId}` : `i:${req.ip}`);
+
+const build = (name, windowMs, max, message, keyGenerator) =>
   rateLimit({
     windowMs,
     max,
+    ...(keyGenerator ? { keyGenerator } : {}),
     standardHeaders: true,
     legacyHeaders: false,
     store: buildStore(name),
@@ -100,10 +124,35 @@ const lazy = (factory) => {
   };
 };
 
+/**
+ * Per browser, not per household.
+ *
+ * Mounted **after** `deviceContext` in app.js, and that order is load-bearing:
+ * `req.deviceId` is set there, so mounting this first — which it was — makes
+ * every request fall back to the IP and quietly restores the bug this key was
+ * added to fix.
+ */
 const globalLimiter = lazy(() =>
-  build("global", 15 * 60 * 1000, 300, "Too many requests. Please slow down.")
+  build("global", 15 * 60 * 1000, 300, "Too many requests. Please slow down.", byDeviceThenIp)
 );
 
+/**
+ * The ceiling over the device-keyed limiters, keyed on IP and deliberately
+ * generous.
+ *
+ * `X-Device-Id` is client-supplied, so a script rotating it gets a fresh 300
+ * every request. This is what stops that becoming unlimited, while sitting far
+ * enough above normal use that a household never meets it: ten people would each
+ * need to spend 200 requests in a quarter of an hour to notice.
+ */
+const networkLimiter = lazy(() =>
+  build("network", 15 * 60 * 1000, 2000, "Too many requests from this network. Please slow down.")
+);
+
+/**
+ * IP, not device. Creating groups needs no account, so this is spam control and
+ * the spammer chooses the header.
+ */
 const createGroupLimiter = lazy(() =>
   build(
     "createGroup",
@@ -113,8 +162,13 @@ const createGroupLimiter = lazy(() =>
   )
 );
 
+/**
+ * Also per browser. Adding expenses is the thing several people do at once at a
+ * restaurant table, and 120 shared between them is roughly a dozen each before
+ * the app starts refusing edits on a group that is working perfectly.
+ */
 const writeLimiter = lazy(() =>
-  build("write", 15 * 60 * 1000, 120, "Too many changes. Please slow down.")
+  build("write", 15 * 60 * 1000, 120, "Too many changes. Please slow down.", byDeviceThenIp)
 );
 
 /**
@@ -154,6 +208,7 @@ const scanLimiter = lazy(() =>
 
 module.exports = {
   globalLimiter,
+  networkLimiter,
   createGroupLimiter,
   writeLimiter,
   codeLookupLimiter,

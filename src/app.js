@@ -6,7 +6,7 @@ const config = require("./config/env");
 const corsMiddleware = require("./config/cors");
 const deviceContext = require("./middlewares/deviceContext");
 const errorMiddleware = require("./middlewares/error.middleware");
-const { globalLimiter } = require("./middlewares/rateLimiter");
+const { globalLimiter, networkLimiter } = require("./middlewares/rateLimiter");
 const { ERROR_CODES } = require("./constants");
 const receiptStorage = require("./utils/receiptStorage");
 const blogStorage = require("./utils/blogStorage");
@@ -286,8 +286,21 @@ if (!config.isProduction) {
   app.use(morgan("dev"));
 }
 
-app.use(globalLimiter);
+/**
+ * `deviceContext` first, and the order is load-bearing.
+ *
+ * It sets `req.deviceId` from the `X-Device-Id` header, and `globalLimiter` keys
+ * on that so a household behind one IP is not one bucket
+ * (middlewares/rateLimiter.js). Mounted the other way round — as it was — the
+ * limiter sees no device id, falls back to the IP for everybody, and the fix
+ * silently does nothing.
+ *
+ * `networkLimiter` is the IP-keyed ceiling above it: the device header is
+ * supplied by the client, so something has to bound a caller that rotates it.
+ */
 app.use(deviceContext);
+app.use(networkLimiter);
+app.use(globalLimiter);
 
 /* ------------------------------ Health check ----------------------------- */
 
@@ -309,7 +322,16 @@ app.use((req, res) =>
   res.status(404).json({
     success: false,
     message: `Route not found: ${req.method} ${req.originalUrl}`,
-    code: ERROR_CODES.GROUP_NOT_FOUND,
+    /**
+     * `ROUTE_NOT_FOUND`, not `GROUP_NOT_FOUND`.
+     *
+     * This handler answers anything that matched no route — a typo, a stale
+     * client calling a path that has been removed, a probe. Reporting those as
+     * GROUP_NOT_FOUND meant the app showed "Group not found" for failures with
+     * nothing to do with a group, and sent people to re-check an invite link that
+     * was never the problem.
+     */
+    code: ERROR_CODES.ROUTE_NOT_FOUND,
   })
 );
 

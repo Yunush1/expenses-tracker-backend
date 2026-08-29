@@ -957,6 +957,16 @@ const ERROR_CODES = Object.freeze({
   DEVICE_LIMIT_REACHED: "DEVICE_LIMIT_REACHED",
   INVALID_MERGE: "INVALID_MERGE",
   GROUP_NOT_FOUND: "GROUP_NOT_FOUND",
+  /** No route matched. Distinct from GROUP_NOT_FOUND — see the 404 handler in app.js. */
+  ROUTE_NOT_FOUND: "ROUTE_NOT_FOUND",
+  /**
+   * The expense belongs to a month that no longer accepts changes.
+   *
+   * Distinct from a validation error because the client can act on it: the row is
+   * still readable in History, and the message says so. See
+   * docs/28-SETTLEMENT-DESIGN.md §2.
+   */
+  PERIOD_LOCKED: "PERIOD_LOCKED",
   /** The short code was right, but a member still has to let you in. */
   JOIN_PENDING_APPROVAL: "JOIN_PENDING_APPROVAL",
   JOIN_REQUEST_NOT_FOUND: "JOIN_REQUEST_NOT_FOUND",

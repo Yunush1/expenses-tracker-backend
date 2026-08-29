@@ -62,6 +62,40 @@ const normalizePrivateKey = (raw) =>
     .replace(/\\n/g, "\n")
     .trim();
 
+/**
+ * Why a key cannot be used, in words that point at the .env file.
+ *
+ * The SDK's own message for every one of these is "Failed to parse private key",
+ * which sends people to look at the code — as the note on `normalizePrivateKey`
+ * says, it "says nothing about a stray comma". These checks run first so the log
+ * names the actual problem.
+ *
+ * Returns null when the key looks well-formed. It is a shape check, not a
+ * validation: whether the key is *correct* is the SDK's business, and a wrong but
+ * well-formed key still gets its own error below.
+ */
+const describeKeyProblem = (key) => {
+  if (!key.includes("-----BEGIN")) {
+    return "it does not start with -----BEGIN PRIVATE KEY-----";
+  }
+  if (!key.includes("-----END")) {
+    return (
+      `it is truncated — no -----END PRIVATE KEY----- marker, and only ${key.length} ` +
+      "characters (a real key is around 1,700). The usual cause is an unbalanced " +
+      "quote in .env: the value must be one line wrapped in double quotes, with " +
+      String.raw`\n` +
+      " standing in for each newline"
+    );
+  }
+  if (key.includes('"') || key.includes("'")) {
+    return "it still contains a quote character, so the surrounding quotes were not stripped";
+  }
+  if (!key.includes("\n")) {
+    return `it has no line breaks — the ${String.raw`\n`} escapes were lost before this point`;
+  }
+  return null;
+};
+
 const initFirebase = () => {
   if (messaging) return messaging;
 
@@ -75,6 +109,16 @@ const initFirebase = () => {
     return null;
   }
 
+  const key = normalizePrivateKey(privateKey);
+  const problem = describeKeyProblem(key);
+
+  if (problem) {
+    logger.error(
+      `[firebase] FIREBASE_PRIVATE_KEY is unusable — push and auth disabled: ${problem}.`
+    );
+    return null;
+  }
+
   try {
     const app = getApps().length
       ? getApp()
@@ -82,7 +126,7 @@ const initFirebase = () => {
           credential: cert({
             projectId,
             clientEmail,
-            privateKey: normalizePrivateKey(privateKey),
+            privateKey: key,
           }),
         });
 

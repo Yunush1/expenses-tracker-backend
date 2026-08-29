@@ -380,6 +380,26 @@ const config = Object.freeze({
   }),
 
   /**
+   * When a month stops accepting changes (docs/28-SETTLEMENT-DESIGN.md §2).
+   *
+   * The current month is always open. The one before it stays open until this
+   * many days into the new month, so somebody who forgets a expense on the 28th
+   * can still add it — after that, History is read-only.
+   *
+   * `0` closes the previous month the instant it ends. There is no value that
+   * disables the lock; leaving months open forever is a different product
+   * decision, not a configuration one.
+   */
+  expensePeriod: Object.freeze({
+    graceDays: Math.max(0, Number(process.env.EXPENSE_GRACE_DAYS ?? 5)),
+    /**
+     * The zone that decides where a month ends. In UTC a month would close at
+     * 05:30 in India, refusing an expense on the evening of the 31st.
+     */
+    timeZone: (process.env.EXPENSE_PERIOD_TZ || process.env.NUDGE_DEFAULT_TZ || "Asia/Kolkata").trim(),
+  }),
+
+  /**
    * Optional generator for the nudge copy. No token means the curated pool is
    * used, which is the default and always works.
    */
