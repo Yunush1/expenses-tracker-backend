@@ -206,6 +206,25 @@ const scanLimiter = lazy(() =>
   build("scan", 15 * 60 * 1000, 15, "That's a lot of photos at once. Give it a minute.")
 );
 
+/**
+ * Minting short links.
+ *
+ * Only the *create* side is limited; resolving is not (see shareLinkRoutes.js for
+ * why). What this bounds is the one thing an unauthenticated create endpoint has
+ * to be bounded against — somebody using it as free storage — and it is set well
+ * above real use: a person editing a trip and re-sharing it after each change
+ * makes a handful of links in an afternoon, and identical payloads deduplicate to
+ * one row rather than spending an attempt each.
+ */
+const shareLinkLimiter = lazy(() =>
+  build(
+    "shareLink",
+    15 * 60 * 1000,
+    30,
+    "That's a lot of share links at once. Give it a minute."
+  )
+);
+
 module.exports = {
   globalLimiter,
   networkLimiter,
@@ -213,4 +232,5 @@ module.exports = {
   writeLimiter,
   codeLookupLimiter,
   scanLimiter,
+  shareLinkLimiter,
 };

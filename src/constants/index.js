@@ -753,6 +753,27 @@ const SHEET_DEFAULT_COLUMNS = Object.freeze([
   { name: "Z", type: SHEET_COLUMN_TYPES.TEXT, width: 150 },
 ]);
 
+/**
+ * What a `/s/<code>` short link stands in for.
+ *
+ * Stored on the row rather than assumed by the resolver, so a second kind can be
+ * added later without invalidating codes that are already sitting in people's
+ * chat histories. Today there is exactly one.
+ */
+const SHARE_LINK_KINDS = Object.freeze({
+  GROUP_EXPENSE_CALCULATOR: "calc",
+  /**
+   * "Priya is asking you for ₹1,240."
+   *
+   * The payload is a payee address, an amount and a note — the same fields a
+   * `upi://pay` intent carries. It is stored for one reason: a `upi://` URL pasted
+   * into a chat app is not tappable, so the request has to travel as `https` and
+   * become the intent on the other side. Nothing here moves money or knows whether
+   * any moved; see the frontend's utils/upi.js for that boundary.
+   */
+  PAYMENT_REQUEST: "pay",
+});
+
 const LIMITS = Object.freeze({
   MAX_MEMBERS_PER_GROUP: 50,
   /** One person, several browsers. Bounded so a shared device cannot accumulate forever. */
@@ -879,6 +900,37 @@ const LIMITS = Object.freeze({
    * is a message that legitimately waits for someone to come back from leave.
    */
   SHEET_REQUEST_TTL_DAYS: 30,
+
+  /* ---------------------------- Share links ----------------------------- */
+
+  /**
+   * The code in `/s/<code>`.
+   *
+   * Seven alphanumerics is ~41 bits — vastly more than the number of links that
+   * will ever exist, so collisions are a formality the insert handles rather than
+   * a thing to plan around. It is deliberately *not* invite-code strength: what
+   * sits behind it is a calculation somebody chose to paste into a group chat,
+   * not access to anyone's group. See docs/02-HLD.md §3.4 for that distinction.
+   */
+  SHARE_LINK_CODE_LENGTH: 7,
+  /**
+   * The encoded payload, in characters.
+   *
+   * A twenty-person trip with ten expenses each encodes well under this, so it is
+   * generous for the calculator and still small enough that this collection never
+   * becomes a file store. The validator also insists the payload is base64url,
+   * which is what stops the endpoint being a general-purpose pastebin.
+   */
+  SHARE_LINK_PAYLOAD_MAX: 12_000,
+  /**
+   * How long a shared link lives, refreshed every time somebody opens it.
+   *
+   * A year from last use, not from creation. The thing on the other end is a trip
+   * that got split — looked at daily for a week, then occasionally, then in the
+   * argument six months later that it exists to settle. Expiring from creation
+   * would kill exactly the links people still use.
+   */
+  SHARE_LINK_TTL_DAYS: 365,
 
   /* ------------------------------- Blog -------------------------------- */
 
@@ -1070,6 +1122,14 @@ const ERROR_CODES = Object.freeze({
   BLOG_SLUG_TAKEN: "BLOG_SLUG_TAKEN",
   BLOG_POST_NOT_FOUND: "BLOG_POST_NOT_FOUND",
 
+  /**
+   * `/s/<code>` matched nothing — expired, mistyped, or truncated by whatever app
+   * the link travelled through. Its own code because the client's answer is a
+   * specific one: open the calculator empty and say the link did not survive,
+   * rather than show a 404 for a page that plainly exists.
+   */
+  SHARE_LINK_NOT_FOUND: "SHARE_LINK_NOT_FOUND",
+
   DUPLICATE: "DUPLICATE",
   RATE_LIMITED: "RATE_LIMITED",
   /**
@@ -1128,6 +1188,7 @@ module.exports = {
   SHEET_NUMBER_FORMATS,
   SHEET_FONTS,
   DEFAULT_SHEET_TITLE,
+  SHARE_LINK_KINDS,
   LIMITS,
   ERROR_CODES,
   DEFAULT_CURRENCY,

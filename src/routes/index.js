@@ -9,6 +9,7 @@ const referralRoutes = require("./referralRoutes");
 const sheetRoutes = require("./sheetRoutes");
 const blogRoutes = require("./blogRoutes");
 const rateRoutes = require("./rateRoutes");
+const shareLinkRoutes = require("./shareLinkRoutes");
 
 const router = express.Router();
 
@@ -19,6 +20,13 @@ router.use("/groups", groupRoutes);
  * answer is identical for every caller, so there is nothing to scope.
  */
 router.use("/rates", rateRoutes);
+/**
+ * Short links for the calculators (models/shareLink.js). Public and account-free
+ * for the same reason as the rates above: the pages that call it have no group and
+ * no sign-in. It is the one place in this API that stores something typed on a
+ * calculator page, and it is only reached when somebody presses Copy or Share.
+ */
+router.use("/share-links", shareLinkRoutes);
 // Device-scoped, not group-scoped: one browser, one token, every group it is in.
 router.use("/push", pushRoutes);
 /**
