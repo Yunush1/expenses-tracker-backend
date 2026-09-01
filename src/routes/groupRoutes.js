@@ -47,6 +47,7 @@ const {
 } = require("../validators/entitlementValidators");
 const { listActivitiesQuery } = require("../validators/activityValidators");
 const { categoryBreakdownQuery, exportQuery } = require("../validators/analyticsValidators");
+const { balancesQuery } = require("../validators/balanceValidators");
 
 const router = express.Router();
 
@@ -162,7 +163,11 @@ router.delete(
 
 /* ------------------------- Derived read models --------------------------- */
 
-router.get("/:inviteCode/balances", balanceController.getBalances);
+router.get(
+  "/:inviteCode/balances",
+  validate(balancesQuery, "query"),
+  balanceController.getBalances
+);
 
 /**
  * Which months and years this group has spending in — so one group can run for

@@ -286,6 +286,20 @@ const toBalanceDTO = (balance, currentMemberId = null, currency = "INR") => ({
   net: toMajor(balance.netMinor, currency),
   status: balanceStatus(balance.netMinor),
   isYou: currentMemberId != null && id(balance.memberId) === id(currentMemberId),
+  /**
+   * Spending over the window the caller asked for, absent when they asked for
+   * none. Everything above is all-time and stays that way — `net` especially, so
+   * a scoped read can never be mistaken for a scoped debt.
+   */
+  ...(balance.periodPaidCount != null
+    ? {
+        periodPaidMinor: balance.periodPaidMinor,
+        periodPaid: toMajor(balance.periodPaidMinor, currency),
+        periodPaidCount: balance.periodPaidCount,
+        periodShareMinor: balance.periodShareMinor,
+        periodShare: toMajor(balance.periodShareMinor, currency),
+      }
+    : {}),
 });
 
 module.exports = {

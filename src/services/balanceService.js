@@ -34,10 +34,10 @@ const toCountsMap = (rows = []) =>
  * Kept separate and exported so any caller that must not read a cached copy —
  * a migration, a consistency check, an assertion — has a way to bypass it.
  */
-const computeBalancesFresh = async (groupId) => {
+const computeBalancesFresh = async (groupId, { from, to } = {}) => {
   const [members, expenseAgg, settlementAgg] = await Promise.all([
     memberRepository.findByGroup(groupId, { includeInactive: true }),
-    expenseRepository.aggregateTotals(groupId),
+    expenseRepository.aggregateTotals(groupId, { from, to }),
     settlementRepository.aggregateTotals(groupId),
   ]);
 
@@ -47,6 +47,19 @@ const computeBalancesFresh = async (groupId) => {
   const paidMap = toTotalsMap(expenseFacets.paid);
   const paidCountMap = toCountsMap(expenseFacets.paid);
   const shareMap = toTotalsMap(expenseFacets.shared);
+
+  /**
+   * The same three figures over the requested window, when one was requested.
+   *
+   * Present only then — `undefined` travels through the serializer and out of the
+   * payload, so a caller that asked for no range gets exactly the response it got
+   * before. A zero would have been a different and worse answer: "spent nothing
+   * this month" rather than "nobody asked about a month".
+   */
+  const scoped = Boolean(from || to);
+  const periodPaidMap = scoped ? toTotalsMap(expenseFacets.periodPaid) : null;
+  const periodPaidCountMap = scoped ? toCountsMap(expenseFacets.periodPaid) : null;
+  const periodShareMap = scoped ? toTotalsMap(expenseFacets.periodShared) : null;
   const settlePaidMap = toTotalsMap(settlementFacets.paid);
   const settleReceivedMap = toTotalsMap(settlementFacets.received);
 
@@ -82,7 +95,20 @@ const computeBalancesFresh = async (groupId) => {
         shareMinor,
         settlementPaidMinor,
         settlementReceivedMinor,
+        /**
+         * `net` is deliberately built from the all-time figures even when a range
+         * was asked for. Scoping it would make an August debt disappear from
+         * September and look unpaid in August — the one wrong answer about money
+         * this app cannot give (docs/14-PERIODS.md §3).
+         */
         netMinor: paidMinor - shareMinor + settlementPaidMinor - settlementReceivedMinor,
+        ...(scoped
+          ? {
+              periodPaidMinor: periodPaidMap.get(key) || 0,
+              periodPaidCount: periodPaidCountMap.get(key) || 0,
+              periodShareMinor: periodShareMap.get(key) || 0,
+            }
+          : {}),
       };
     });
 
@@ -118,8 +144,18 @@ const computeBalancesFresh = async (groupId) => {
  * The zero-sum assertion still runs on the computed result, so a cached copy is
  * one that already passed it.
  */
-const computeBalances = (groupId) =>
-  cacheService.rememberGroup(groupId, "balances", () => computeBalancesFresh(groupId));
+const computeBalances = (groupId, { from, to } = {}) =>
+  cacheService.rememberGroup(
+    groupId,
+    /*
+     * The window is part of the key. Without it the group screen's
+     * September-scoped copy would be served to settle-up and to the AI snapshot,
+     * which ask the same endpoint for the all-time one — the exact confusion
+     * between "spending" and "debt" the range exists to keep apart.
+     */
+    from || to ? `balances:${from || ""}:${to || ""}` : "balances",
+    () => computeBalancesFresh(groupId, { from, to })
+  );
 
 /**
  * Σ net must be exactly zero — every expense and every settlement contributes a

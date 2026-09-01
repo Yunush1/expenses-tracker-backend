@@ -22,6 +22,42 @@ const findByClientRequestId = (groupId, clientRequestId) => {
 /** Anything a user types is a literal, not a pattern. */
 const escapeRegex = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/**
+ * A `from`/`to` pair as a Mongo range over **whole days**, or null for no range.
+ *
+ * A date picker sends a date; what arrives is a timestamp with whatever
+ * time-of-day the browser attached. Compared literally, "from 5 August" means
+ * "from 5 August at 14:32", and the lunch someone logged that morning silently
+ * falls outside a range they picked to include it. Nobody reads a date filter as
+ * having a time component, so neither does this.
+ *
+ * Day boundaries are UTC, which is the same simplification the rest of the app
+ * makes (points use a UTC day key). For a user more than a few hours off UTC an
+ * expense near midnight can land on the neighbouring day — visible only at the
+ * very edge of a range, and the alternative is threading a timezone through
+ * every list request.
+ *
+ * One helper rather than three copies: the list, the category breakdown and the
+ * balances facets all mean the same thing by a date, and a range that drifted
+ * between them would put a row in one screen's month and not another's.
+ */
+const dayRange = ({ from, to } = {}) => {
+  const range = {};
+
+  if (from) {
+    const start = new Date(from);
+    start.setUTCHours(0, 0, 0, 0);
+    range.$gte = start;
+  }
+  if (to) {
+    const end = new Date(to);
+    end.setUTCHours(23, 59, 59, 999);
+    range.$lte = end;
+  }
+
+  return Object.keys(range).length > 0 ? range : null;
+};
+
 /** `date` means whichever date field the caller chose — see `dateField` below. */
 const SORT_FIELDS = {
   date: (dateField) => dateField,
@@ -92,33 +128,9 @@ const listByGroup = async (
     filter.category = category === "UNCATEGORISED" ? { $in: [null, ""] } : category;
   }
 
-  /**
-   * Whole days, not instants.
-   *
-   * A date picker sends a date; what arrives is a timestamp with whatever
-   * time-of-day the browser attached. Compared literally, "from 5 August" means
-   * "from 5 August at 14:32", and the lunch someone logged that morning silently
-   * falls outside a range they picked to include it. Nobody reads a date filter
-   * as having a time component, so neither does this.
-   *
-   * Day boundaries are UTC, which is the same simplification the rest of the app
-   * makes (points use a UTC day key). For a user more than a few hours off UTC an
-   * expense near midnight can land on the neighbouring day — visible only at the
-   * very edge of a range, and the alternative is threading a timezone through
-   * every list request.
-   */
-  const range = {};
-  if (from) {
-    const start = new Date(from);
-    start.setUTCHours(0, 0, 0, 0);
-    range.$gte = start;
-  }
-  if (to) {
-    const end = new Date(to);
-    end.setUTCHours(23, 59, 59, 999);
-    range.$lte = end;
-  }
-  if (Object.keys(range).length > 0) filter[dateField] = range;
+  // Whole days, not instants — see `dayRange`.
+  const range = dayRange({ from, to });
+  if (range) filter[dateField] = range;
 
   const [sortKey, sortDir] = String(sort).split("_");
   const field = (SORT_FIELDS[sortKey] || SORT_FIELDS.date)(dateField);
@@ -196,25 +208,60 @@ const countInvolvingMember = (groupId, memberId) =>
  * calculation needs: per-member paid totals, per-member share totals, and the
  * group aggregate. See docs/03-LLD.md §5.4.
  */
-const aggregateTotals = (groupId) =>
-  Expense.aggregate([
+/**
+ * Everything the balance computation needs, in one pass.
+ *
+ * ## The optional range, and what it may not touch
+ *
+ * `from`/`to` add two **extra** facets scoped to that window; they never narrow
+ * the ones above them. That asymmetry is the whole design: a balance is a running
+ * position between two people and has to stay all-time (docs/14-PERIODS.md §3) —
+ * a September settlement routinely clears an August dinner, so "who owes whom in
+ * September" computed from September alone would show a debt somebody has already
+ * paid, and they would pay twice.
+ *
+ * What *is* safe to scope is spending, because every expense belongs to exactly
+ * one month and `Σ shares = amount` holds within it. So the range answers "what
+ * did this person put in this month", beside an all-time "and where do they
+ * stand" — two questions, two facets, neither pretending to be the other.
+ *
+ * Both branches run inside one `$facet`, so the range costs a second pass over
+ * the same already-matched rows rather than a second round trip.
+ */
+const aggregateTotals = (groupId, { from, to } = {}) => {
+  const range = dayRange({ from, to });
+
+  const facets = {
+    // `count` rides along free — the group stage is already scanning these
+    // rows, and the per-person expense view needs "4 expenses · ₹2,400"
+    // without loading four expenses to find out.
+    paid: [{ $group: { _id: "$paidBy", total: { $sum: "$amountMinor" }, count: { $sum: 1 } } }],
+    shared: [
+      { $unwind: "$shares" },
+      { $group: { _id: "$shares.memberId", total: { $sum: "$shares.amountMinor" } } },
+    ],
+    overall: [
+      { $group: { _id: null, totalSpentMinor: { $sum: "$amountMinor" }, count: { $sum: 1 } } },
+    ],
+  };
+
+  if (range) {
+    facets.periodPaid = [
+      { $match: { expenseDate: range } },
+      { $group: { _id: "$paidBy", total: { $sum: "$amountMinor" }, count: { $sum: 1 } } },
+    ];
+    facets.periodShared = [
+      { $match: { expenseDate: range } },
+      { $unwind: "$shares" },
+      { $group: { _id: "$shares.memberId", total: { $sum: "$shares.amountMinor" } } },
+    ];
+  }
+
+  return Expense.aggregate([
     { $match: { groupId: new mongoose.Types.ObjectId(String(groupId)), isDeleted: false } },
-    {
-      $facet: {
-        // `count` rides along free — the group stage is already scanning these
-        // rows, and the per-person expense view needs "4 expenses · ₹2,400"
-        // without loading four expenses to find out.
-        paid: [{ $group: { _id: "$paidBy", total: { $sum: "$amountMinor" }, count: { $sum: 1 } } }],
-        shared: [
-          { $unwind: "$shares" },
-          { $group: { _id: "$shares.memberId", total: { $sum: "$shares.amountMinor" } } },
-        ],
-        overall: [
-          { $group: { _id: null, totalSpentMinor: { $sum: "$amountMinor" }, count: { $sum: 1 } } },
-        ],
-      },
-    },
+    { $facet: facets },
   ]);
+};
 
 /**
  * Which months and years this group actually has expenses in.
@@ -272,19 +319,8 @@ const periods = (groupId) =>
 const categoryTotals = (groupId, { from, to, memberId } = {}) => {
   const match = { groupId: new mongoose.Types.ObjectId(String(groupId)), isDeleted: false };
 
-  // Whole days, matching listByGroup — see the note there for why.
-  const range = {};
-  if (from) {
-    const start = new Date(from);
-    start.setUTCHours(0, 0, 0, 0);
-    range.$gte = start;
-  }
-  if (to) {
-    const end = new Date(to);
-    end.setUTCHours(23, 59, 59, 999);
-    range.$lte = end;
-  }
-  if (Object.keys(range).length > 0) match.expenseDate = range;
+  const range = dayRange({ from, to });
+  if (range) match.expenseDate = range;
 
   /** Null, empty and missing all mean the same thing to a reader. */
   const categoryKey = {
