@@ -40,6 +40,40 @@ const fingerprintOf = (kind, code, payload) =>
 const CODE_ATTEMPTS = 3;
 
 /**
+ * The readable copy, with its totals worked out here rather than trusted.
+ *
+ * A count the client asserted is a number that can disagree with the rows next to
+ * it, and the moment it does there is no way to tell which one is lying. These are
+ * cheap to derive and derived every time anything is written.
+ *
+ * `null` in, `null` out: a caller that sends no rows has not sent empty ones, and
+ * storing an empty trip would be recording something that was never said.
+ */
+const summarise = (data) => {
+  if (!data?.people) return null;
+
+  const people = data.people.map((person) => ({
+    name: person.name ?? "",
+    expenses: (person.expenses ?? []).map((expense) => ({
+      what: expense.what ?? "",
+      amountMinor: Math.round(expense.amountMinor ?? 0),
+      excluded: expense.excluded ?? [],
+    })),
+  }));
+
+  return {
+    currency: data.currency || "INR",
+    people,
+    peopleCount: people.length,
+    expenseCount: people.reduce((count, person) => count + person.expenses.length, 0),
+    totalMinor: people.reduce(
+      (sum, person) => sum + person.expenses.reduce((inner, e) => inner + e.amountMinor, 0),
+      0
+    ),
+  };
+};
+
+/**
  * Create a short link.
  *
  * No longer idempotent by content, and that is the point: two people who happen
@@ -48,7 +82,7 @@ const CODE_ATTEMPTS = 3;
  * link, because the client remembers the code it was given and updates that
  * instead of asking for another.
  */
-exports.create = async ({ kind, payload }) => {
+exports.create = async ({ kind, payload, data = null }) => {
   for (let attempt = 1; attempt <= CODE_ATTEMPTS; attempt += 1) {
     const code = generateShareCode();
 
@@ -57,6 +91,7 @@ exports.create = async ({ kind, payload }) => {
         code,
         kind,
         payload,
+        data: summarise(data),
         fingerprint: fingerprintOf(kind, code, payload),
         revision: 1,
         expiresAt: nextExpiry(),
@@ -91,7 +126,7 @@ exports.create = async ({ kind, payload }) => {
  * Refuses rather than creating: an unknown code is not something to quietly mint
  * a replacement for. The client's answer to that is a fresh link.
  */
-exports.update = async ({ code, payload, revision }) => {
+exports.update = async ({ code, payload, revision, data = null }) => {
   const link = await ShareLink.findOne({ code });
 
   if (!link) {
@@ -129,6 +164,13 @@ exports.update = async ({ code, payload, revision }) => {
   }
 
   link.payload = payload;
+  /*
+   * Only replaced when rows came with the write. An older client sends the payload
+   * alone, and blanking the readable copy on its behalf would leave the row
+   * describing a trip that no longer matches the payload beside it — worse than
+   * having no readable copy at all.
+   */
+  if (data) link.data = summarise(data);
   link.fingerprint = fingerprintOf(link.kind, link.code, payload);
   link.revision = link.revision + 1;
   link.expiresAt = nextExpiry();
@@ -177,6 +219,13 @@ exports.resolve = async (code) => {
   return {
     kind: link.kind,
     payload: link.payload,
+    /**
+     * Sent back as well as stored. The client renders from `payload`, so this is
+     * not what draws the screen — it is here so anything that is not this
+     * calculator (a script, an export, a support answer to "what was in that
+     * link?") can read a shared trip without carrying the decoder.
+     */
+    data: link.data || null,
     revision: link.revision,
     updatedAt: link.updatedAt,
   };

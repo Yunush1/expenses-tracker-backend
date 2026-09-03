@@ -29,10 +29,23 @@ const { generateShareCode } = require("../utils/shareCode");
  *
  * ## What is stored, and what is not
  *
- * The opaque base64url payload and nothing else. No device id, no IP, no account:
- * they are not needed to resolve a code, and a row that carried them would turn a
- * shared calculation into a record of who calculated it. The validator refuses
- * anything that is not base64url, so this cannot quietly become a pastebin.
+ * The calculation twice, and nothing about the people doing it. No device id, no
+ * IP, no account: they are not needed to resolve a code, and a row that carried
+ * them would turn a shared calculation into a record of who calculated it.
+ *
+ *  - **`payload`** is the encoded form and remains authoritative. It is what the
+ *    client decodes, what a `#d=` link carries, and the only field the resolver
+ *    needs. The validator refuses anything that is not base64url.
+ *  - **`data`** is the same calculation as readable rows — people, their entries,
+ *    the amounts — so the collection can be inspected, queried and totalled
+ *    without a decoder. Written by the client from the *same object* it hands the
+ *    encoder, so the two cannot describe different trips.
+ *
+ * The honest cost of `data`: this row now contains text somebody typed, where
+ * before it was an opaque blob. Names and descriptions are length-capped hard by
+ * the validator and are never rendered as markup anywhere, but "the server cannot
+ * read your trip" is no longer true, and that sentence is not repeated where it
+ * would now be false.
  *
  * ## The link is the document, and everybody holding it may write
  *
@@ -78,6 +91,41 @@ const { generateShareCode } = require("../utils/shareCode");
  * can be removed whenever there is a migration to spare.
  */
 
+/** One line somebody typed: what it was for, what it cost, who did not share it. */
+const shareExpenseSchema = new mongoose.Schema(
+  {
+    what: { type: String, default: "", trim: true, maxlength: LIMITS.SHARE_LINK_WHAT_MAX },
+    /** Minor units, like every other amount in this app (docs/05-ALGORITHMS.md §1). */
+    amountMinor: { type: Number, default: 0, min: 0 },
+    /**
+     * Positions in `people`, not ids — the same convention the encoded payload
+     * uses, so the two forms say the same thing about who shared what.
+     */
+    excluded: { type: [Number], default: [] },
+  },
+  { _id: false }
+);
+
+const sharePersonSchema = new mongoose.Schema(
+  {
+    name: { type: String, default: "", trim: true, maxlength: LIMITS.SHARE_LINK_NAME_MAX },
+    expenses: { type: [shareExpenseSchema], default: [] },
+  },
+  { _id: false }
+);
+
+const shareDataSchema = new mongoose.Schema(
+  {
+    currency: { type: String, default: "INR", maxlength: 3 },
+    people: { type: [sharePersonSchema], default: [] },
+    /** Derived on write — see the note on `data` below. */
+    peopleCount: { type: Number, default: 0 },
+    expenseCount: { type: Number, default: 0 },
+    totalMinor: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
 const shareLinkSchema = new mongoose.Schema(
   {
     /** The public handle. `/s/<code>` and nothing else identifies this row. */
@@ -99,15 +147,34 @@ const shareLinkSchema = new mongoose.Schema(
     },
 
     /**
-     * The encoded state, exactly as it appeared after `#d=`. Opaque here on
-     * purpose: this server does not decode it, does not validate its contents and
-     * has no schema for what is inside. The client that wrote it is the only
-     * thing that reads it.
+     * The encoded state, exactly as it appeared after `#d=`.
+     *
+     * Still the authoritative copy, and still opaque to this server: it is not
+     * decoded here and there is no schema for what is inside. `data` below is the
+     * readable mirror of it, not a replacement — a `#d=` link has to keep working
+     * with no row at all, which only the encoded form can do.
      */
     payload: {
       type: String,
       required: true,
       maxlength: LIMITS.SHARE_LINK_PAYLOAD_MAX,
+    },
+
+    /**
+     * The same calculation as rows: who is in it, what each of them entered.
+     *
+     * Optional, because a client that only sends the payload is still a valid
+     * client and a row written before this existed is still a valid row. Absent
+     * rather than empty in that case — an empty `people` array would read as "a
+     * shared trip with nobody in it", which is a different and wrong fact.
+     *
+     * The three counts are derived on the server from `people` rather than taken
+     * from the request. A client-asserted total is a number that can disagree with
+     * the rows beside it, and the first time it does, nobody knows which to trust.
+     */
+    data: {
+      type: shareDataSchema,
+      default: null,
     },
 
     /** SHA-256 of `kind:code:payload` — unique per row, not a dedupe key. See the header. */

@@ -27,6 +27,7 @@ exports.create = asyncHandler(async (req, res) => {
 exports.update = asyncHandler(async (req, res) => {
   const link = await shareLinkService.update({ code: req.params.code, ...req.body });
 
+
   return ok(res, link, link.changed ? "Share link updated" : "Share link unchanged");
 });
 

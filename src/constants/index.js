@@ -923,6 +923,19 @@ const LIMITS = Object.freeze({
    */
   SHARE_LINK_PAYLOAD_MAX: 12_000,
   /**
+   * Caps on the readable copy of a shared calculation.
+   *
+   * Generous against the calculator, which stops at 20 people — room for the
+   * screen to change without a validator having to change with it, and still a
+   * hard ceiling, because this is the field where user-written text is stored
+   * rather than an opaque blob.
+   */
+  SHARE_LINK_PEOPLE_MAX: 50,
+  SHARE_LINK_EXPENSES_MAX: 100,
+  /** Matches the two inputs on the page: a name and what it was for. */
+  SHARE_LINK_NAME_MAX: 24,
+  SHARE_LINK_WHAT_MAX: 40,
+  /**
    * How long a shared link lives, refreshed every time somebody opens it.
    *
    * A year from last use, not from creation. The thing on the other end is a trip

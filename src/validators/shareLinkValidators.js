@@ -22,7 +22,45 @@ const payload = z
   .max(LIMITS.SHARE_LINK_PAYLOAD_MAX, "That calculation is too large to share by link")
   .regex(/^[A-Za-z0-9_-]+$/, "Unrecognised share payload");
 
+/**
+ * The readable copy of a calculation.
+ *
+ * Every string here is text a person typed, which is a different kind of field
+ * from the base64 payload above and is treated like one: hard length caps, hard
+ * array caps, and numbers that must be numbers. Nothing renders these as markup,
+ * and nothing should start to.
+ *
+ * Optional throughout. A client that sends only the payload is still valid — the
+ * payload is the contract, and this is a mirror of it.
+ */
+const shareData = z
+  .object({
+    currency: z.string().length(3).optional(),
+    people: z
+      .array(
+        z.object({
+          name: z.string().max(LIMITS.SHARE_LINK_NAME_MAX).default(""),
+          expenses: z
+            .array(
+              z.object({
+                what: z.string().max(LIMITS.SHARE_LINK_WHAT_MAX).default(""),
+                amountMinor: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+                excluded: z
+                  .array(z.number().int().min(0))
+                  .max(LIMITS.SHARE_LINK_PEOPLE_MAX)
+                  .default([]),
+              })
+            )
+            .max(LIMITS.SHARE_LINK_EXPENSES_MAX)
+            .default([]),
+        })
+      )
+      .max(LIMITS.SHARE_LINK_PEOPLE_MAX),
+  })
+  .optional();
+
 const createShareLink = z.object({
+  data: shareData,
   /**
    * Defaulted rather than required: today there is one kind, and a client that
    * omits it means the calculator. Validated against the enum all the same, so
@@ -43,6 +81,7 @@ const createShareLink = z.object({
  */
 const updateShareLink = z.object({
   payload,
+  data: shareData,
   revision: z.coerce.number().int().min(1).optional(),
 });
 
