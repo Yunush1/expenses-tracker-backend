@@ -159,6 +159,7 @@ exports.update = async ({ code, payload, revision, data = null }) => {
       kind: link.kind,
       revision: link.revision,
       changed: false,
+      data: link.data || null,
       updatedAt: link.updatedAt,
     };
   }
@@ -181,6 +182,7 @@ exports.update = async ({ code, payload, revision, data = null }) => {
     kind: link.kind,
     revision: link.revision,
     changed: true,
+    data: link.data || null,
     updatedAt: link.updatedAt,
   };
 };
