@@ -5,8 +5,10 @@ const { ok, created } = require("../utils/apiResponse");
 /**
  * Short links for the calculators (models/shareLink.js).
  *
- * Two endpoints, no account, no device scoping, and nothing here reads or writes
- * anything belonging to a group. It is a lookup table with a create.
+ * Three endpoints, no account, no device scoping, and nothing here reads or
+ * writes anything belonging to a group. It is a lookup table with a create and an
+ * update, the update authorised by a secret the client holds rather than by
+ * anything this server knows about the caller.
  */
 
 exports.create = asyncHandler(async (req, res) => {
@@ -22,17 +24,31 @@ exports.create = asyncHandler(async (req, res) => {
   return created(res, link, "Share link created");
 });
 
+exports.update = asyncHandler(async (req, res) => {
+  const link = await shareLinkService.update({ code: req.params.code, ...req.body });
+
+  return ok(res, link, link.changed ? "Share link updated" : "Share link unchanged");
+});
+
 exports.resolve = asyncHandler(async (req, res) => {
   const link = await shareLinkService.resolve(req.params.code);
 
   /**
-   * A code's payload never changes — a different payload is a different code — so
-   * this is genuinely immutable and can be cached hard. Five minutes rather than
-   * a year only because `hits` and the expiry refresh are worth keeping roughly
-   * honest, and because a link posted in a group chat is opened by twenty people
-   * inside a minute, which is the burst this is actually protecting against.
+   * `no-cache` means *revalidate*, not *do not store*, and the distinction is the
+   * whole point here.
+   *
+   * This used to be `max-age=300` on the grounds that a code's payload never
+   * changed. It changes now — that is what the owner key is for — and five
+   * minutes of a stale copy is precisely the complaint the feature was built to
+   * answer: somebody fixes a number, sends nothing, and the link goes on showing
+   * the old one.
+   *
+   * The burst that justified caching is still handled. Express attaches an ETag
+   * to this body, so twenty people opening the same chat message revalidate and
+   * get 304s with no payload on the wire — and the moment the owner edits, the
+   * ETag changes and the next open sees it.
    */
-  res.set("Cache-Control", "public, max-age=300");
+  res.set("Cache-Control", "no-cache");
 
   return ok(res, link, "Share link");
 });

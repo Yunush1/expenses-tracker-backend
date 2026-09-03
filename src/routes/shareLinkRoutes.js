@@ -3,7 +3,11 @@ const express = require("express");
 const validate = require("../middlewares/validate");
 const { shareLinkLimiter } = require("../middlewares/rateLimiter");
 const shareLinkController = require("../controllers/shareLinkController");
-const { createShareLink, shareCodeParams } = require("../validators/shareLinkValidators");
+const {
+  createShareLink,
+  updateShareLink,
+  shareCodeParams,
+} = require("../validators/shareLinkValidators");
 
 const router = express.Router();
 
@@ -16,6 +20,25 @@ const router = express.Router();
  * validator plus the limiter — see both for the reasoning.
  */
 router.post("/", shareLinkLimiter, validate(createShareLink), shareLinkController.create);
+
+/**
+ * `PATCH /api/share-links/:code` — the same link, new numbers.
+ *
+ * Behind the limiter like the create, because it is the same act: a person
+ * pressing Share on a calculation they have changed. Authorised by the owner key
+ * in the body and by nothing else — there is no account here to check it against,
+ * which is the trade the whole feature is built on (models/shareLink.js).
+ *
+ * The params are validated before the body so a malformed code is "not a share
+ * link" rather than a complaint about a key nobody was going to check.
+ */
+router.patch(
+  "/:code",
+  shareLinkLimiter,
+  validate(shareCodeParams, "params"),
+  validate(updateShareLink),
+  shareLinkController.update
+);
 
 /**
  * `GET /api/share-links/:code` — the payload back.
