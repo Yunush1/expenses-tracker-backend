@@ -211,6 +211,24 @@ const register = (io) => {
       });
     });
 
+    /**
+     * Share link subscriptions — no auth, code is the permission.
+     *
+     * The room name is `sharelink:CODE` and anybody holding the code can join. The
+     * server broadcasts updates to everyone in the room when the payload changes.
+     */
+    socket.on("join", ({ room } = {}) => {
+      if (room && typeof room === "string" && room.startsWith("sharelink:")) {
+        socket.join(room);
+      }
+    });
+
+    socket.on("leave", ({ room } = {}) => {
+      if (room && typeof room === "string") {
+        socket.leave(room);
+      }
+    });
+
     socket.on("disconnect", () => leaveRoom(socket));
   });
 };

@@ -1,6 +1,7 @@
 const asyncHandler = require("../middlewares/asyncHandler");
 const shareLinkService = require("../services/shareLinkService");
 const { ok, created } = require("../utils/apiResponse");
+const { getIo } = require("../realtime/io");
 
 /**
  * Short links for the calculators (models/shareLink.js).
@@ -27,6 +28,30 @@ exports.create = asyncHandler(async (req, res) => {
 exports.update = asyncHandler(async (req, res) => {
   const link = await shareLinkService.update({ code: req.params.code, ...req.body });
 
+  /**
+   * Anyone subscribed to this link gets the update instantly. The room name is
+   * `sharelink:CODE` so the same code that the client holds is the key.
+   *
+   * `link.changed` tells the broadcast whether this was an actual edit (true) or
+   * just a refresh (false — same payload, but the clock moved). The client can
+   * decide whether to re-render: if the bytes are identical it can skip the
+   * re-decode and stay where it was.
+   *
+   * The payload is sent as-is so clients that hold the code can read it without
+   * a second GET. The rest of `link` (revision, updatedAt, data) are sent too, so
+   * a reader can see what the server knows without a second round trip.
+   */
+  const io = getIo();
+  if (io) {
+    io.of("/").to(`sharelink:${req.params.code}`).emit("update", {
+      code: req.params.code,
+      payload: link.payload,
+      revision: link.revision,
+      data: link.data,
+      changed: link.changed,
+      updatedAt: link.updatedAt,
+    });
+  }
 
   return ok(res, link, link.changed ? "Share link updated" : "Share link unchanged");
 });
