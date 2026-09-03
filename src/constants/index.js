@@ -1129,8 +1129,8 @@ const ERROR_CODES = Object.freeze({
    * rather than show a 404 for a page that plainly exists.
    */
   SHARE_LINK_NOT_FOUND: "SHARE_LINK_NOT_FOUND",
-  /** The link is real, but this caller cannot prove they made it. */
-  SHARE_LINK_NOT_YOURS: "SHARE_LINK_NOT_YOURS",
+  /** Somebody else saved first — the caller is editing an older revision. */
+  SHARE_LINK_CONFLICT: "SHARE_LINK_CONFLICT",
 
   DUPLICATE: "DUPLICATE",
   RATE_LIMITED: "RATE_LIMITED",

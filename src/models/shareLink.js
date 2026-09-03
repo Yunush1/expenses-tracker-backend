@@ -34,38 +34,48 @@ const { generateShareCode } = require("../utils/shareCode");
  * shared calculation into a record of who calculated it. The validator refuses
  * anything that is not base64url, so this cannot quietly become a pastebin.
  *
- * ## A link can be updated by whoever made it
+ * ## The link is the document, and everybody holding it may write
  *
  * The original rule was that a code stood for one payload for ever: edit a number
- * and you got a different code. That is defensible as a model and was wrong as a
- * product — somebody shares a trip into a group chat, fixes a typo, and the four
- * people holding the link go on reading the typo for ever, with nothing on either
- * end saying so.
+ * and you got a different code. That was wrong as a product — somebody shares a
+ * trip into a group chat, fixes a typo, and the people holding the link go on
+ * reading the typo, with nothing on either end saying so.
  *
- * So a link may carry an **owner key**: a secret the client generates, keeps on
- * its own device and never shows anybody. Only its SHA-256 is stored here, so a
- * dump of this collection does not let the reader edit anybody's links. Present
- * it and `PATCH /share-links/:code` replaces the payload in place; the link
- * already sitting in the chat then resolves to the new numbers.
+ * The first fix made the *creator* able to update it. That was still wrong, for
+ * the symmetrical reason: the whole point of sending a trip to four people is
+ * that they correct it. "You forgot the taxi" is the normal response to a shared
+ * calculation, and a reader who cannot add the taxi has to send a message asking
+ * somebody else to.
  *
- * There is deliberately no account behind this. The key *is* the claim, which
- * means clearing the browser's storage loses the ability to update a link — the
- * honest cost of a feature with nothing to log in to, and a much smaller cost
- * than the link going stale.
+ * So the code is a **capability**, exactly like a group's invite link
+ * (docs/02-HLD.md §3.4): holding it is permission to read *and* to write. There is
+ * no account here to check anything else against, and inventing one would be a
+ * different product.
  *
- * ## Why it is deduplicated, and what the owner key does to that
+ * **What that costs, stated plainly:** anyone the link reaches can change the
+ * numbers, including somebody it was forwarded to. There is no history, no
+ * attribution and no undo. That is the same trade a document shared as "anyone
+ * with the link can edit" makes, and the page says so where people can read it.
  *
- * `fingerprint` is a unique hash of the payload, so pressing Copy twice returns
- * the same code instead of growing the collection once per tap.
+ * ## `revision`, and why last-write-wins was not enough
  *
- * For an owned link the owner key hash is folded into that hash, which changes
- * what dedupe *means*: it now collapses one owner's repeated taps, and no longer
- * collapses two different people who happen to have typed the same trip. That
- * separation is required rather than tidy — sharing a row between two owners and
- * then letting one of them edit it would silently rewrite the other's link.
+ * Two people editing at once is now ordinary rather than impossible, and a plain
+ * overwrite loses whichever edit lands second — silently, which is the part that
+ * matters. Every write therefore states the revision it was based on, and the
+ * server refuses one built on a stale copy with a 409. The client then reconciles
+ * rather than clobbering: it can see it is behind, and asks.
  *
- * Rows with no owner key keep the old key exactly, so anything already in the
- * collection goes on behaving as it did and no migration is needed.
+ * ## About `fingerprint`
+ *
+ * It carries `code`, so it is unique per row and no longer deduplicates anything.
+ * That is deliberate. Content dedupe was a saving when a payload was immutable;
+ * with editable rows it would hand two strangers who typed the same trip one
+ * shared document, and one of them would silently rewrite the other's.
+ *
+ * The field and its unique index stay because dropping a unique index needs a
+ * migration, and a half-applied one leaves every insert failing on a duplicate
+ * null. Keeping a per-row hash costs one column and needs no operational step. It
+ * can be removed whenever there is a migration to spare.
  */
 
 const shareLinkSchema = new mongoose.Schema(
@@ -100,28 +110,23 @@ const shareLinkSchema = new mongoose.Schema(
       maxlength: LIMITS.SHARE_LINK_PAYLOAD_MAX,
     },
 
-    /**
-     * SHA-256 of `kind:payload`, or of `kind:payload:ownerKeyHash` once there is
-     * an owner. The dedupe key — see the header.
-     */
+    /** SHA-256 of `kind:code:payload` — unique per row, not a dedupe key. See the header. */
     fingerprint: {
       type: String,
       required: true,
     },
 
     /**
-     * SHA-256 of the secret that may replace this payload, or null for a link
-     * nobody claimed.
+     * How many times this has been written, starting at 1.
      *
-     * The hash and never the key itself: this row is the thing most likely to be
-     * read by somebody who should not have it, and a stored secret would let them
-     * edit every link in the collection. Null is a real state and it is checked —
-     * a link made before this existed has no owner and cannot be updated by
-     * anyone, which is the behaviour it was created under.
+     * The concurrency check and nothing more: a client sends the revision its
+     * edit was based on, and a mismatch means somebody saved in between. Not a
+     * history — there is only ever one payload here, and the previous one is
+     * gone.
      */
-    ownerKeyHash: {
-      type: String,
-      default: null,
+    revision: {
+      type: Number,
+      default: 1,
     },
 
     /**

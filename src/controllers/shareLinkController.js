@@ -6,9 +6,9 @@ const { ok, created } = require("../utils/apiResponse");
  * Short links for the calculators (models/shareLink.js).
  *
  * Three endpoints, no account, no device scoping, and nothing here reads or
- * writes anything belonging to a group. It is a lookup table with a create and an
- * update, the update authorised by a secret the client holds rather than by
- * anything this server knows about the caller.
+ * writes anything belonging to a group. The code is the capability: holding it is
+ * permission to read and to write, which is the same posture as a group invite
+ * link and is spelled out where people can read it (models/shareLink.js).
  */
 
 exports.create = asyncHandler(async (req, res) => {

@@ -2,7 +2,7 @@ const crypto = require("crypto");
 
 const ShareLink = require("../models/shareLink");
 const { LIMITS, ERROR_CODES } = require("../constants");
-const { ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError } = require("../errors");
+const { ConflictError, NotFoundError, ServiceUnavailableError } = require("../errors");
 const { generateShareCode } = require("../utils/shareCode");
 const logger = require("../utils/logger");
 
@@ -22,36 +22,13 @@ const nextExpiry = () => new Date(Date.now() + TTL_MS);
  * characters and Mongo's index-key limit is 1024 bytes — an index on the payload
  * itself would fail on exactly the large trips this feature is for.
  *
- * `kind` is inside the hash so two kinds that ever share an encoding do not
- * collapse into one row pointing at the wrong page.
- *
- * The owner's hash goes in too, when there is one. That is what stops two people
- * who typed the same trip from sharing a row — which used to be a harmless saving
- * and became a bug the moment a row could be edited, because one of them editing
- * would rewrite the other's link. Omitted when there is no owner, so every row
- * written before this keeps the fingerprint it already has.
+ * `kind` and `code` are both inside it. `kind` so two kinds that ever share an
+ * encoding cannot collide; `code` so the hash is unique per row and dedupes
+ * nothing — see models/shareLink.js for why content dedupe had to go once rows
+ * became editable.
  */
-const fingerprintOf = (kind, payload, ownerKeyHash = null) =>
-  crypto
-    .createHash("sha256")
-    .update(ownerKeyHash ? `${kind}:${payload}:${ownerKeyHash}` : `${kind}:${payload}`)
-    .digest("hex");
-
-/** Only ever the hash is stored — see models/shareLink.js. */
-const hashOwnerKey = (ownerKey) =>
-  crypto.createHash("sha256").update(String(ownerKey)).digest("hex");
-
-/**
- * Constant-time comparison, because this is the one check standing between a
- * stranger and somebody else's link. Both sides are 64 hex characters, so the
- * length guard never fires in practice and is there so `timingSafeEqual` cannot
- * throw on input that did not come from `hashOwnerKey`.
- */
-const sameOwner = (left, right) => {
-  const a = Buffer.from(String(left));
-  const b = Buffer.from(String(right));
-  return a.length === b.length && crypto.timingSafeEqual(a, b);
-};
+const fingerprintOf = (kind, code, payload) =>
+  crypto.createHash("sha256").update(`${kind}:${code}:${payload}`).digest("hex");
 
 /**
  * How many times to try again when a generated code is already taken.
@@ -63,57 +40,34 @@ const sameOwner = (left, right) => {
 const CODE_ATTEMPTS = 3;
 
 /**
- * Create a short link, or hand back the one this exact payload already has.
+ * Create a short link.
  *
- * Idempotent by content: pressing Copy, editing nothing, and pressing Copy again
- * returns the same code rather than a second row.
- *
- * `ownerKey` is the client's own secret and is optional. With one, the caller can
- * come back and change what this code stands for; without, the row behaves
- * exactly as every row did before — fixed for the life of the link.
+ * No longer idempotent by content, and that is the point: two people who happen
+ * to have typed the same trip must not be handed one shared document that either
+ * can rewrite. Pressing Share twice on the *same* calculation still yields one
+ * link, because the client remembers the code it was given and updates that
+ * instead of asking for another.
  */
-exports.create = async ({ kind, payload, ownerKey = null }) => {
-  const ownerKeyHash = ownerKey ? hashOwnerKey(ownerKey) : null;
-  const fingerprint = fingerprintOf(kind, payload, ownerKeyHash);
-
-  /**
-   * Reuse first, and refresh the clock while we are here: sharing a link again is
-   * the strongest possible evidence it is still wanted.
-   */
-  const existing = await ShareLink.findOneAndUpdate(
-    { fingerprint },
-    { $set: { expiresAt: nextExpiry() } },
-    { new: true }
-  ).lean();
-
-  if (existing) return { code: existing.code, kind: existing.kind, reused: true };
-
+exports.create = async ({ kind, payload }) => {
   for (let attempt = 1; attempt <= CODE_ATTEMPTS; attempt += 1) {
+    const code = generateShareCode();
+
     try {
       const link = await ShareLink.create({
-        code: generateShareCode(),
+        code,
         kind,
         payload,
-        fingerprint,
-        ownerKeyHash,
+        fingerprint: fingerprintOf(kind, code, payload),
+        revision: 1,
         expiresAt: nextExpiry(),
       });
 
-      return { code: link.code, kind: link.kind, reused: false };
+      return { code: link.code, kind: link.kind, revision: link.revision };
     } catch (error) {
       if (error?.code !== 11000) throw error;
 
-      /**
-       * Two identical payloads raced each other here. Both callers want the same
-       * thing and one of them already has it, so read the winner rather than
-       * failing the loser — from the outside both taps produced a link.
-       */
-      if (error?.keyPattern?.fingerprint) {
-        const winner = await ShareLink.findOne({ fingerprint }).lean();
-        if (winner) return { code: winner.code, kind: winner.kind, reused: true };
-      }
-
-      // Otherwise the code collided. Draw another and go round.
+      // A generated code was already taken. Draw another and go round — at 62^7
+      // this is a lottery win rather than something to plan around.
       logger.warn(`[share-link] code collision on attempt ${attempt}`);
     }
   }
@@ -122,17 +76,22 @@ exports.create = async ({ kind, payload, ownerKey = null }) => {
 };
 
 /**
- * Replace what a code stands for, for the client that made it.
+ * Replace what a code stands for. Anybody holding the code may do this.
  *
- * The link in somebody's chat is unchanged; what it resolves to is not. That is
- * the whole feature: the alternative was sending a second link and hoping
- * everybody reads the newer message.
+ * The link in the chat is unchanged; what it resolves to is not. Everyone the
+ * link reached is a writer, because the normal response to a shared trip is "you
+ * forgot the taxi" and the person who noticed should be able to add it.
  *
- * Refuses rather than creating: a code that does not exist, or one this caller
- * cannot prove it made, is not something to quietly mint a replacement for. The
- * client decides what to do about that, and what it does is start a fresh link.
+ * `revision` is the copy this edit was based on. A mismatch means somebody saved
+ * in between, and the write is refused rather than applied — the client then
+ * fetches what it missed and decides. Without that, whoever typed second would
+ * silently erase whoever typed first, which is the failure nobody would ever spot
+ * in time.
+ *
+ * Refuses rather than creating: an unknown code is not something to quietly mint
+ * a replacement for. The client's answer to that is a fresh link.
  */
-exports.update = async ({ code, payload, ownerKey }) => {
+exports.update = async ({ code, payload, revision }) => {
   const link = await ShareLink.findOne({ code });
 
   if (!link) {
@@ -143,45 +102,45 @@ exports.update = async ({ code, payload, ownerKey }) => {
   }
 
   /**
-   * Unowned links are immutable, and that is not a gap to close later. They were
-   * shared under a promise that a code means one calculation for ever, and the
-   * people holding them never agreed to anything else.
+   * The check is skipped when the caller states no revision, which is how an
+   * older client — one deployed before any of this — goes on working. It gets
+   * last-write-wins, which is what it already had.
    */
-  if (!link.ownerKeyHash || !sameOwner(link.ownerKeyHash, hashOwnerKey(ownerKey))) {
-    throw new ForbiddenError(
-      "This link was made somewhere else, so it cannot be updated from here.",
-      ERROR_CODES.SHARE_LINK_NOT_YOURS
+  if (revision != null && revision !== link.revision) {
+    throw new ConflictError(
+      "Somebody else saved a change first. Reload to see it before saving yours.",
+      ERROR_CODES.SHARE_LINK_CONFLICT
     );
   }
 
-  // Nothing to say. The clock still moves — asking to update a link is evidence
-  // it is still wanted, exactly as sharing it again is.
+  // Nothing to say, so nothing is written and the revision does not move — a
+  // no-op that bumped it would make every other client think it was behind. The
+  // clock still moves: asking to save is evidence the link is still wanted.
   if (link.payload === payload) {
     link.expiresAt = nextExpiry();
     await link.save();
-    return { code: link.code, kind: link.kind, changed: false, updatedAt: link.updatedAt };
+    return {
+      code: link.code,
+      kind: link.kind,
+      revision: link.revision,
+      changed: false,
+      updatedAt: link.updatedAt,
+    };
   }
 
   link.payload = payload;
-  link.fingerprint = fingerprintOf(link.kind, payload, link.ownerKeyHash);
+  link.fingerprint = fingerprintOf(link.kind, link.code, payload);
+  link.revision = link.revision + 1;
   link.expiresAt = nextExpiry();
+  await link.save();
 
-  try {
-    await link.save();
-  } catch (error) {
-    /**
-     * The fingerprint carries this row's own owner hash, so the only row that
-     * could collide is one this same owner already has holding this exact
-     * payload. Vanishingly unlikely, and a 409 the client can read beats the 500
-     * an unhandled duplicate key becomes.
-     */
-    if (error?.code === 11000) {
-      throw new ConflictError("You already have a link for this exact calculation.");
-    }
-    throw error;
-  }
-
-  return { code: link.code, kind: link.kind, changed: true, updatedAt: link.updatedAt };
+  return {
+    code: link.code,
+    kind: link.kind,
+    revision: link.revision,
+    changed: true,
+    updatedAt: link.updatedAt,
+  };
 };
 
 /**
@@ -209,5 +168,16 @@ exports.resolve = async (code) => {
     );
   }
 
-  return { kind: link.kind, payload: link.payload };
+  /**
+   * `revision` travels with the payload because the two are one fact: a client
+   * that reads a payload and then saves has to say which copy it changed, and
+   * fetching that separately would leave a window where it states a revision it
+   * never actually read.
+   */
+  return {
+    kind: link.kind,
+    payload: link.payload,
+    revision: link.revision,
+    updatedAt: link.updatedAt,
+  };
 };
