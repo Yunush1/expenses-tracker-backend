@@ -16,6 +16,11 @@ exports.getSummary = asyncHandler(async (req, res) =>
   ok(res, await ledgerService.getSummary(req.user._id))
 );
 
+/** The "by month" view — see `ledgerService.getMonthlyBreakdown`. */
+exports.getMonthly = asyncHandler(async (req, res) =>
+  ok(res, await ledgerService.getMonthlyBreakdown(req.user._id, req.validatedQuery?.months))
+);
+
 /** People this account can name on a loan — members of groups it belongs to. */
 exports.listContacts = asyncHandler(async (req, res) =>
   ok(res, await ledgerService.listContacts(req.user._id))

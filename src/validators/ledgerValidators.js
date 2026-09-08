@@ -91,6 +91,11 @@ const listEntriesQuery = paginationQuery.extend({
   source: z.enum(["MANUAL", "GROUP_EXPENSE"]).optional(),
 });
 
+/** How many calendar months the "by month" view looks back, current month included. */
+const monthlyQuery = z.object({
+  months: z.coerce.number().int().min(1).max(24).optional(),
+});
+
 const entryParams = z.object({ id: objectId });
 const repaymentParams = z.object({ id: objectId, repaymentId: objectId });
 
@@ -99,6 +104,7 @@ module.exports = {
   updateEntrySchema,
   addRepaymentSchema,
   listEntriesQuery,
+  monthlyQuery,
   entryParams,
   repaymentParams,
 };

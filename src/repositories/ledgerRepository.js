@@ -74,6 +74,27 @@ const softDeleteEntry = (ledgerId, entryId) =>
   );
 
 /**
+ * Money that left the owner's pocket in a window by paying back something
+ * *borrowed* — repayments received on money the owner *lent* are the opposite
+ * direction (cash coming back in) and never belong here.
+ *
+ * Kept separate from the `spend` aggregate in `totals()` below because it reads
+ * a different field on a different type of row: `repayments.paidAt` on a
+ * `BORROWED` entry, not `occurredAt` on a `SPEND` one. A ₹5,000 loan taken in
+ * July and paid back ₹2,000 in September is ₹2,000 of real spending in
+ * September, even though the entry itself is dated July.
+ */
+const repaidBorrowedTotal = async (ledgerId, since) => {
+  const rows = await LedgerEntry.aggregate([
+    { $match: { ledgerId, isDeleted: false, type: LEDGER_ENTRY_TYPES.BORROWED } },
+    { $unwind: "$repayments" },
+    ...(since ? [{ $match: { "repayments.paidAt": { $gte: since } } }] : []),
+    { $group: { _id: null, totalMinor: { $sum: "$repayments.amountMinor" }, count: { $sum: 1 } } },
+  ]);
+  return rows[0] || { totalMinor: 0, count: 0 };
+};
+
+/**
  * The three headline figures, computed in the database rather than by loading
  * every entry — the ledger summary is the most-hit read and must not scale with
  * how long someone has been using it.
@@ -82,7 +103,7 @@ const softDeleteEntry = (ledgerId, entryId) =>
  * loan from two years ago is still owed.
  */
 const totals = async (ledgerId, { spendSince } = {}) => {
-  const [debts, spend] = await Promise.all([
+  const [debts, spend, repaid] = await Promise.all([
     LedgerEntry.aggregate([
       {
         $match: {
@@ -128,6 +149,7 @@ const totals = async (ledgerId, { spendSince } = {}) => {
         },
       },
     ]),
+    repaidBorrowedTotal(ledgerId, spendSince),
   ]);
 
   const byType = new Map(debts.map((row) => [row._id, row]));
@@ -140,15 +162,23 @@ const totals = async (ledgerId, { spendSince } = {}) => {
     owedToMeCount: byType.get(LEDGER_ENTRY_TYPES.LENT)?.count || 0,
     iOweMinor: byType.get(LEDGER_ENTRY_TYPES.BORROWED)?.outstandingMinor || 0,
     iOweCount: byType.get(LEDGER_ENTRY_TYPES.BORROWED)?.count || 0,
-    /** Both halves together — the answer to "what did I spend this month". */
-    spentMinor: manual.totalMinor + fromGroups.totalMinor,
-    spentCount: manual.count + fromGroups.count,
+    /**
+     * Every rupee that actually left the owner's pocket this window: spends,
+     * plus whatever they paid back on money they had borrowed. Money coming
+     * *back* to the owner — a repayment on something they lent — is not spend
+     * and is intentionally excluded; see `repaidBorrowedTotal` above.
+     */
+    spentMinor: manual.totalMinor + fromGroups.totalMinor + repaid.totalMinor,
+    spentCount: manual.count + fromGroups.count + repaid.count,
     /** Spent alone. */
     spentOwnMinor: manual.totalMinor,
     spentOwnCount: manual.count,
     /** My share of what the groups spent. */
     spentGroupMinor: fromGroups.totalMinor,
     spentGroupCount: fromGroups.count,
+    /** The new component of `spentMinor`: paid back this window on a debt owed. */
+    repaidBorrowedMinor: repaid.totalMinor,
+    repaidBorrowedCount: repaid.count,
   };
 };
 
@@ -167,6 +197,58 @@ const spendByCategory = (ledgerId, since) =>
     { $sort: { totalMinor: -1 } },
   ]);
 
+/**
+ * Raw rows for the "by month" view, covering the last `months` calendar
+ * months including the current, partial one.
+ *
+ * Deliberately **not** grouped by month in the aggregation, unlike everything
+ * else in this file. Mongo's `$year`/`$month` operators bucket in UTC, while
+ * every other month boundary here — `startOfMonth` in ledgerService, this same
+ * function's own `since` — is the server's local clock. Grouping in Mongo
+ * would give this view a second, disagreeing definition of "which month
+ * something falls in", silently off by a day right at the boundary. Row counts
+ * here are one person's ledger, bounded by `months` (capped at 24), so
+ * fetching the raw rows and bucketing them in JS in the service — the same way
+ * `monthKey` already does — costs nothing and keeps one definition instead of
+ * two.
+ */
+const spendByMonth = async (ledgerId, months = 6) => {
+  const since = new Date();
+  since.setHours(0, 0, 0, 0);
+  since.setDate(1);
+  since.setMonth(since.getMonth() - (months - 1));
+
+  const [spendRows, borrowedEntries] = await Promise.all([
+    LedgerEntry.find({
+      ledgerId,
+      isDeleted: false,
+      type: LEDGER_ENTRY_TYPES.SPEND,
+      occurredAt: { $gte: since },
+    })
+      .select("occurredAt amountMinor source")
+      .lean(),
+    LedgerEntry.find({
+      ledgerId,
+      isDeleted: false,
+      type: LEDGER_ENTRY_TYPES.BORROWED,
+      "repayments.paidAt": { $gte: since },
+    })
+      .select("repayments")
+      .lean(),
+  ]);
+
+  /**
+   * Just the repayments inside the window. An entry matches the query above
+   * the moment *one* of its repayments is recent enough — older instalments on
+   * the same loan must not be pulled in with it.
+   */
+  const repayments = borrowedEntries.flatMap((entry) =>
+    (entry.repayments || []).filter((repayment) => repayment.paidAt >= since)
+  );
+
+  return { since, spendRows, repayments };
+};
+
 module.exports = {
   findByUser,
   createForUser,
@@ -177,4 +259,5 @@ module.exports = {
   softDeleteEntry,
   totals,
   spendByCategory,
+  spendByMonth,
 };

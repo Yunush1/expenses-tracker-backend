@@ -103,6 +103,9 @@ const getOrCreate = async (userId) => {
 const startOfMonth = (date = new Date()) =>
   new Date(date.getFullYear(), date.getMonth(), 1);
 
+/** `"2026-09"` — sorts and compares lexically, and is what the client keys rows by. */
+const monthKey = (year, month) => `${year}-${String(month).padStart(2, "0")}`;
+
 const getSummaryFresh = async (userId) => {
   const ledger = await getOrCreate(userId);
 
@@ -129,6 +132,82 @@ const getSummaryFresh = async (userId) => {
     })),
   };
 };
+
+const DEFAULT_MONTHLY_WINDOW = 6;
+const MAX_MONTHLY_WINDOW = 24;
+
+/**
+ * The "by month" view: one row per calendar month, most recent first, each one
+ * the same shape `totals()` breaks `spentMinor` into — own spend, share of
+ * group spend, and money paid back on something borrowed — so a month card and
+ * the headline "Spent this month" figure never disagree about what counts.
+ *
+ * Every month in the window is present even when empty, rather than only the
+ * months with rows in them — a gap in the list should read as "nothing that
+ * month", not as a missing card.
+ */
+const getMonthlyBreakdownFresh = async (userId, months) => {
+  const ledger = await getOrCreate(userId);
+  const { spendRows, repayments } = await ledgerRepository.spendByMonth(ledger._id, months);
+
+  const byMonth = new Map();
+  const bucketFor = (key) => {
+    if (!byMonth.has(key)) {
+      byMonth.set(key, {
+        month: key,
+        spentOwnMinor: 0,
+        spentOwnCount: 0,
+        spentGroupMinor: 0,
+        spentGroupCount: 0,
+        repaidBorrowedMinor: 0,
+        repaidBorrowedCount: 0,
+      });
+    }
+    return byMonth.get(key);
+  };
+
+  const cursor = startOfMonth();
+  for (let i = 0; i < months; i += 1) {
+    bucketFor(monthKey(cursor.getFullYear(), cursor.getMonth() + 1));
+    cursor.setMonth(cursor.getMonth() - 1);
+  }
+
+  // Bucketed in JS, on the server's local clock — see spendByMonth's doc
+  // comment for why this cannot be done in the aggregation itself.
+  for (const row of spendRows) {
+    const occurredAt = new Date(row.occurredAt);
+    const bucket = bucketFor(monthKey(occurredAt.getFullYear(), occurredAt.getMonth() + 1));
+    if (row.source === "GROUP_EXPENSE") {
+      bucket.spentGroupMinor += row.amountMinor;
+      bucket.spentGroupCount += 1;
+    } else {
+      bucket.spentOwnMinor += row.amountMinor;
+      bucket.spentOwnCount += 1;
+    }
+  }
+
+  for (const repayment of repayments) {
+    const paidAt = new Date(repayment.paidAt);
+    const bucket = bucketFor(monthKey(paidAt.getFullYear(), paidAt.getMonth() + 1));
+    bucket.repaidBorrowedMinor += repayment.amountMinor;
+    bucket.repaidBorrowedCount += 1;
+  }
+
+  const months_ = [...byMonth.values()]
+    .sort((a, b) => (a.month < b.month ? 1 : -1))
+    .map((row) => ({
+      ...row,
+      totalMinor: row.spentOwnMinor + row.spentGroupMinor + row.repaidBorrowedMinor,
+      count: row.spentOwnCount + row.spentGroupCount + row.repaidBorrowedCount,
+    }));
+
+  return { ledger: { id: String(ledger._id), currency: ledger.currency }, months: months_ };
+};
+
+const getMonthlyBreakdown = (userId, months = DEFAULT_MONTHLY_WINDOW) =>
+  cacheService.rememberUser(userId, `monthly:${Math.min(months, MAX_MONTHLY_WINDOW)}`, () =>
+    getMonthlyBreakdownFresh(userId, Math.min(months, MAX_MONTHLY_WINDOW))
+  );
 
 const listEntries = async (
   userId,
@@ -883,6 +962,7 @@ const respondToClaim = async (userId, entryId, accept) => {
 module.exports = {
   getOrCreate,
   getSummary,
+  getMonthlyBreakdown,
   listEntries,
   listContacts,
   lookupByCode,

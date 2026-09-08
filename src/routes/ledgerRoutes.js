@@ -9,6 +9,7 @@ const {
   updateEntrySchema,
   addRepaymentSchema,
   listEntriesQuery,
+  monthlyQuery,
   entryParams,
   repaymentParams,
 } = require("../validators/ledgerValidators");
@@ -30,6 +31,9 @@ const router = express.Router();
 router.use(requireAuth);
 
 router.get("/", ledgerController.getSummary);
+
+/** One row per calendar month — spend, group share, and loan repayments made. */
+router.get("/monthly", validate(monthlyQuery, "query"), ledgerController.getMonthly);
 
 /**
  * Declared before "/entries/:id" so neither is shadowed by the other.
