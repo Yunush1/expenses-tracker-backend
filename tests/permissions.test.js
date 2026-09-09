@@ -13,8 +13,11 @@ const { ERROR_CODES } = require("../src/constants");
 
 const AUTHOR = "aaa1";
 const OTHER = "bbb2";
+const PAYER = "ccc3";
 
 const expense = { createdByMemberId: AUTHOR, description: "Milk and groceries" };
+/** Author and payer are different people — the case that used to lock the payer out. */
+const expensePaidByOther = { createdByMemberId: AUTHOR, paidBy: PAYER, description: "Milk and groceries" };
 
 const member = (id, { isCreator = false } = {}) => ({ _id: id, isCreator, name: `M-${id}` });
 
@@ -65,4 +68,26 @@ test("an expense with no recorded author is creator-only", () => {
     code: ERROR_CODES.EXPENSE_OWNER_ONLY,
   });
   assert.doesNotThrow(() => assertCanModify(orphan, member(OTHER, { isCreator: true })));
+});
+
+/**
+ * Someone adds "Milk — paid by Rahul" on Rahul's behalf: the author and the
+ * payer are different people, and it is Rahul's balance the amount changes.
+ * He is not a bystander the way an uninvolved third member is, so he needs to
+ * be able to fix his own expense without going through the person who typed
+ * it in or the group creator.
+ */
+test("the payer can change an expense someone else added on their behalf", () => {
+  assert.doesNotThrow(() => assertCanModify(expensePaidByOther, member(PAYER)));
+});
+
+test("someone who is neither the author nor the payer still cannot change it", () => {
+  assert.throws(() => assertCanModify(expensePaidByOther, member(OTHER)), {
+    code: ERROR_CODES.EXPENSE_OWNER_ONLY,
+    statusCode: 403,
+  });
+});
+
+test("the author can still change it even when someone else paid", () => {
+  assert.doesNotThrow(() => assertCanModify(expensePaidByOther, member(AUTHOR)));
 });

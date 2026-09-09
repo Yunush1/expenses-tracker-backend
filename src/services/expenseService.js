@@ -20,8 +20,8 @@ const { ACTIVITY_TYPES, LIMITS, SPLIT_TYPES, ERROR_CODES } = require("../constan
 const { BadRequestError, NotFoundError, ConflictError, ForbiddenError } = require("../errors");
 
 /**
- * Changing an expense is restricted to the member who recorded it, plus the group
- * creator acting as moderator.
+ * Changing an expense is restricted to whoever recorded it, whoever actually
+ * paid for it, plus the group creator acting as moderator.
  *
  * Without this rule, holding the invite link is permission to rewrite anyone's
  * numbers: one member logs ₹100 of groceries, another quietly makes it ₹70, and
@@ -29,15 +29,24 @@ const { BadRequestError, NotFoundError, ConflictError, ForbiddenError } = requir
  * fact — and a balance the payer never agreed to is exactly the disagreement this
  * app exists to prevent.
  *
- * The creator keeps an override because the author may have lost their device or
- * left the group, and an expense nobody can correct is its own kind of broken.
+ * **The payer is included, not just the author**, because the two are routinely
+ * different people: someone adds "Milk — paid by Rahul" on Rahul's behalf, and
+ * until now Rahul — whose money it actually was — had no way to fix a typo in his
+ * own expense without going back to whoever typed it, or to the group creator.
+ * It is his balance the amount changes, so he is not a bystander here the way an
+ * uninvolved third member is.
+ *
+ * The creator keeps an override on top of both, because either one may have lost
+ * their device or left the group, and an expense nobody can correct is its own
+ * kind of broken.
  */
 const assertCanModify = (expense, actor) => {
   const isAuthor = String(expense.createdByMemberId) === String(actor._id);
+  const isPayer = String(expense.paidBy) === String(actor._id);
 
-  if (!isAuthor && !actor.isCreator) {
+  if (!isAuthor && !isPayer && !actor.isCreator) {
     throw new ForbiddenError(
-      "Only the member who added this expense can change it. Ask them, or ask the group creator.",
+      "Only the member who added this expense, whoever paid it, or the group creator can change it.",
       ERROR_CODES.EXPENSE_OWNER_ONLY
     );
   }
