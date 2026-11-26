@@ -296,6 +296,122 @@ const entitlementConfig = (() => {
   });
 })();
 
+/**
+ * The AI providers this app can talk to, and the order it tries them in.
+ *
+ * Every entry but `anthropic` speaks OpenAI's chat-completions format, so adding
+ * a provider is one entry here — no new code path in aiProvider.
+ *
+ *   AI_PROVIDER            which one to ask first (gemini | groq | anthropic | openai).
+ *                          Unset: inferred from which key is present, in that order
+ *                          of preference — gemini, anthropic, groq, openai.
+ *   AI_FALLBACK_PROVIDERS  comma list tried, in order, when the first one fails
+ *                          (quota, outage, timeout). Unset: `groq` whenever
+ *                          GROQ_API_KEY is set. `none` switches fallback off.
+ *
+ * A provider without its key is skipped, so listing one you have not set up yet
+ * is harmless.
+ */
+const envValue = (key) => (process.env[key] || "").trim();
+const trimUrl = (url) => url.replace(/\/+$/, "");
+
+const AI_PROVIDER_DEFS = {
+  /**
+   * Google's free tier. Multimodal, so it can read receipts as well.
+   * gemini-3.8-flash because 2.5 Flash is closed to new API accounts (Google's
+   * 404 names this as the replacement). `npm run ai:check` lists what a key can use.
+   */
+  gemini: () => {
+    const model = envValue("GEMINI_MODEL") || "gemini-3.8-flash";
+    return {
+      kind: "openai",
+      apiKey: envValue("GEMINI_API_KEY"),
+      // Gemini's compatible endpoint is /v1beta/openai/chat/completions — not /v1/...
+      completionsUrl: `${trimUrl(envValue("GEMINI_BASE_URL") || "https://generativelanguage.googleapis.com/v1beta/openai")}/chat/completions`,
+      model,
+      visionModel: envValue("GEMINI_VISION_MODEL"),
+      /**
+       * Gemini 2.5+ thinks before answering, and thinking tokens come out of
+       * `max_tokens` — a 500-token budget can be spent entirely on thought and
+       * return nothing. `none` turns thinking off on 2.5 Flash / Flash-Lite;
+       * Gemini 3 cannot turn it off, so it defaults to `low` and aiProvider adds
+       * headroom.
+       */
+      reasoningEffort:
+        envValue("GEMINI_REASONING_EFFORT") || (/^gemini-2\.5-flash/.test(model) ? "none" : "low"),
+    };
+  },
+  /**
+   * Groq's free tier, text only. gpt-oss-120b because Llama 3.3 70B — the model
+   * that passed this app's Hinglish and debt-direction cases (see
+   * `config.ai.model`) — is no longer offered to new Groq keys; re-run those
+   * cases against whatever is set here.
+   */
+  groq: () => {
+    const model = envValue("GROQ_MODEL") || "openai/gpt-oss-120b";
+    return {
+      kind: "openai",
+      apiKey: envValue("GROQ_API_KEY"),
+      completionsUrl: `${trimUrl(envValue("GROQ_BASE_URL") || "https://api.groq.com/openai")}/v1/chat/completions`,
+      model,
+      visionModel: envValue("GROQ_VISION_MODEL"),
+      // gpt-oss always reasons; `low` keeps it fast. Other Groq models take none.
+      reasoningEffort: envValue("GROQ_REASONING_EFFORT") || (/gpt-oss/.test(model) ? "low" : ""),
+    };
+  },
+  /** Claude, through Anthropic's SDK and Messages API. Paid. */
+  anthropic: () => ({
+    kind: "anthropic",
+    apiKey: envValue("ANTHROPIC_API_KEY"),
+    model: envValue("ANTHROPIC_MODEL") || "claude-opus-5-5",
+    visionModel: envValue("ANTHROPIC_VISION_MODEL"),
+  }),
+  /** Any other OpenAI-compatible endpoint — Hugging Face's router by default. */
+  openai: () => ({
+    kind: "openai",
+    apiKey: envValue("AI_API_KEY") || envValue("HUGGINGFACE_API_TOKEN"),
+    completionsUrl: `${trimUrl(envValue("AI_BASE_URL") || envValue("HUGGINGFACE_BASE_URL") || "https://router.huggingface.co")}/v1/chat/completions`,
+    model: envValue("AI_MODEL") || envValue("HUGGINGFACE_MODEL") || "meta-llama/Llama-3.3-70B-Instruct",
+    visionModel: envValue("AI_VISION_MODEL"),
+  }),
+};
+
+const aiProviderChain = (() => {
+  const resolved = Object.fromEntries(
+    Object.entries(AI_PROVIDER_DEFS).map(([name, define]) => [name, Object.freeze({ name, ...define() })])
+  );
+  const known = (name) => {
+    if (resolved[name]) return true;
+    logger.warn(`[config] Unknown AI provider "${name}" — expected one of: ${Object.keys(resolved).join(", ")}`);
+    return false;
+  };
+
+  const requested = envValue("AI_PROVIDER").toLowerCase();
+  const primary =
+    requested && known(requested)
+      ? requested
+      : ["gemini", "anthropic", "groq", "openai"].find((name) => resolved[name].apiKey) || "openai";
+
+  if (!resolved[primary].apiKey && requested) {
+    logger.warn(`[config] AI_PROVIDER=${primary} but its API key is not set — trying the fallbacks instead`);
+  }
+
+  const fallbackRaw = envValue("AI_FALLBACK_PROVIDERS").toLowerCase();
+  const fallbacks =
+    fallbackRaw === "none"
+      ? []
+      : fallbackRaw
+        ? fallbackRaw.split(",").map((name) => name.trim()).filter((name) => name && known(name))
+        : ["groq"];
+
+  return Object.freeze(
+    [...new Set([primary, ...fallbacks])].map((name) => resolved[name]).filter((p) => p.apiKey)
+  );
+})();
+
+/** The provider asked first. Its values are what `config.ai.model` etc. report. */
+const PRIMARY_AI = aiProviderChain[0] || { name: "none", kind: "openai", apiKey: "", model: "", visionModel: "" };
+
 const config = Object.freeze({
   env: NODE_ENV,
   isProduction: NODE_ENV === "production",
@@ -423,7 +539,21 @@ const config = Object.freeze({
    * configured those gets the assistant without touching anything.
    */
   ai: Object.freeze({
-    apiKey: (process.env.AI_API_KEY || process.env.HUGGINGFACE_API_TOKEN || "").trim(),
+    /**
+     * Every configured provider, in the order they are tried — the first is the
+     * primary, the rest are fallbacks. See AI_PROVIDER_DEFS above.
+     */
+    chain: aiProviderChain,
+    /** The primary provider's name: gemini | groq | anthropic | openai | none. */
+    provider: PRIMARY_AI.name,
+    apiKey: PRIMARY_AI.apiKey,
+    completionsUrl: PRIMARY_AI.completionsUrl || "",
+    /**
+     * Claude's effort level (low | medium | high | xhigh | max): how much it
+     * thinks before answering. `low` suits short ledger answers and keeps latency
+     * inside the text timeout; raise it if answers on complex ledgers slip.
+     */
+    anthropicEffort: (process.env.ANTHROPIC_EFFORT || "low").trim(),
     baseUrl: (process.env.AI_BASE_URL || process.env.HUGGINGFACE_BASE_URL || "https://router.huggingface.co")
       .replace(/\/+$/, ""),
     /**
@@ -443,7 +573,7 @@ const config = Object.freeze({
      * this ceiling. Do not drop back to an 8B to save credits without re-running
      * those cases.
      */
-    model: (process.env.AI_MODEL || process.env.HUGGINGFACE_MODEL || "meta-llama/Llama-3.3-70B-Instruct").trim(),
+    model: PRIMARY_AI.model,
     /**
      * Questions per account per day. Small on purpose: generous for a person,
      * useless to a script, and it bounds the bill even if everything else fails.
@@ -488,7 +618,10 @@ const config = Object.freeze({
      * somebody's shared expenses is the worst available failure, which is why the
      * vision path refuses to run rather than falling back.
      */
-    visionModel: (process.env.AI_VISION_MODEL || "").trim(),
+    // The primary's <PROVIDER>_VISION_MODEL (GEMINI_VISION_MODEL, ANTHROPIC_…,
+    // AI_…) — still opt-in, for the cost reason above. On fallback each provider
+    // uses its own, and one without a vision model is skipped for receipts.
+    visionModel: PRIMARY_AI.visionModel,
     /**
      * Longer than the text timeout, because a photograph is several thousand
      * tokens of input before the model writes its first word. At the text timeout

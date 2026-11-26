@@ -1,6 +1,7 @@
 const config = require("../../config/env");
 const logger = require("../../utils/logger");
 const aiUsage = require("./aiUsageService");
+const Anthropic = require("@anthropic-ai/sdk");
 
 /**
  * The only place this app talks to a language model.
@@ -10,50 +11,125 @@ const aiUsage = require("./aiUsageService");
  * That makes the provider a config value rather than a code path, which matters
  * because model pricing and quality change faster than this product will.
  *
+ * Google Gemini (GEMINI_API_KEY) goes through this same path via Google's
+ * OpenAI-compatible endpoint; Claude has its own adapter below.
+ *
  * Everything about *what* to ask lives in assistantService; this file only knows
  * how to send it and how to fail politely.
  */
 
-const isConfigured = () => Boolean(config.ai.apiKey);
+const isConfigured = () => config.ai.chain.length > 0;
 
 /**
- * Send a chat completion. Returns the assistant's text, or throws a plain Error
- * whose message is safe to log — never the request body, which contains the
- * user's financial context.
+ * Claude, through Anthropic's SDK and Messages API — the `anthropic` provider.
+ *
+ * Same contract as the OpenAI path: returns the reply text, meters the call,
+ * and throws an Error carrying `status` and `permanent` so assistantService
+ * can tell a billing/config problem from a blip.
  */
-const complete = async ({
-  system,
-  user,
-  maxTokens = 500,
-  temperature = 0.2,
-  /**
-   * Data URLs to send alongside the text — a photographed receipt, today.
-   *
-   * The multi-part `content` array is the same OpenAI chat-completions shape the
-   * text path uses, so this is one extra branch rather than a second adapter. A
-   * request with images is still a chat completion; it simply costs several times
-   * more and needs a model that can see (docs/10-AI-ASSISTANT.md §7).
-   */
-  images = [],
-  /**
-   * Which model to ask. Defaults to the text model, and is overridden for vision
-   * because a 70B text model cannot read a photograph and fails in the least
-   * useful way available — a confident, invented answer.
-   */
-  model = config.ai.model,
-  /**
-   * Which capability is spending — `ask`, `draft`, `receipt`, `suggestions`.
-   *
-   * Recorded on the meter so cost is answerable per feature rather than only per
-   * model, which is what a per-use price has to be set from
-   * (docs/22-MONETIZATION.md §1.4). Defaulting to `unknown` rather than being
-   * required, because a caller that forgets should under-label a number, not fail
-   * a user's request.
-   */
-  feature = "unknown",
-} = {}) => {
-  if (!isConfigured()) throw new Error("AI is not configured");
+let anthropicClient = null;
+const getAnthropic = (apiKey) => {
+  if (!anthropicClient) anthropicClient = new Anthropic({ apiKey });
+  return anthropicClient;
+};
 
+// Models that support the server-side refusal fallback: on a policy decline the
+// API re-runs the request on another model inside the same call.
+const SUPPORTS_FALLBACK = /^claude-(opus-5-5|opus-5|sonnet-5-5|fable-5-[12])$/;
+
+/** `data:image/jpeg;base64,…` → an Anthropic base64 image block. */
+const toImageBlock = (dataUrl) => {
+  const match = /^data:(image\/[\w.+-]+);base64,(.+)$/s.exec(dataUrl);
+  if (!match) throw new Error("AI image must be a base64 data URL");
+  return { type: "image", source: { type: "base64", media_type: match[1], data: match[2] } };
+};
+
+const completeWithClaude = async (provider, { system, user, maxTokens, images, model, feature }) => {
+  const controller = new AbortController();
+  const timeoutMs = images.length > 0 ? config.ai.visionTimeoutMs : config.ai.timeoutMs;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  const params = {
+    model,
+    /**
+     * Claude thinks before it writes, and thinking counts against max_tokens.
+     * The caller's budget is meant for the answer, so add headroom on top —
+     * billing is on tokens actually used, not on the ceiling.
+     */
+    max_tokens: maxTokens + 2048,
+    output_config: { effort: config.ai.anthropicEffort },
+    ...(system ? { system } : {}),
+    messages: [
+      {
+        role: "user",
+        // Images first, then the instruction — Claude reads best that way.
+        content: images.length === 0 ? user : [...images.map(toImageBlock), { type: "text", text: user }],
+      },
+    ],
+    // No `temperature`: current Claude models reject sampling parameters.
+  };
+  if (SUPPORTS_FALLBACK.test(model)) {
+    params.betas = ["server-side-fallback-2026-07-01"];
+    params.fallbacks = "default";
+  }
+
+  try {
+    const response = await getAnthropic(provider.apiKey).beta.messages.create(params, {
+      signal: controller.signal,
+      // The SDK retries 429/5xx itself; one retry keeps the wall clock near the timeout.
+      maxRetries: 1,
+    });
+
+    if (response.stop_reason === "refusal") {
+      logger.warn(`[ai] Claude declined a ${feature} request (${response.stop_details?.category || "no category"})`);
+      throw new Error("AI declined the request");
+    }
+
+    const text = response.content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("")
+      .trim();
+    if (!text) throw new Error("AI returned an empty response");
+
+    aiUsage.record({
+      model: response.model || model,
+      feature,
+      promptTokens:
+        (response.usage?.input_tokens || 0) +
+        (response.usage?.cache_read_input_tokens || 0) +
+        (response.usage?.cache_creation_input_tokens || 0),
+      completionTokens: response.usage?.output_tokens,
+    });
+
+    return text;
+  } catch (error) {
+    if (error instanceof Anthropic.APIUserAbortError || error instanceof Anthropic.APIConnectionTimeoutError) {
+      throw new Error("AI timed out");
+    }
+    if (error instanceof Anthropic.APIError && error.status) {
+      // Log Anthropic's reason (e.g. "credit balance is too low"), never the request.
+      logger.warn(`[ai] Anthropic returned ${error.status}: ${String(error.message).slice(0, 300)}`);
+      const wrapped = new Error(`AI provider error (${error.status})`);
+      // 400 covers "credit balance too low" and bad parameters — neither heals on retry.
+      wrapped.permanent = [400, 401, 402, 403, 404].includes(error.status);
+      wrapped.status = error.status;
+      throw wrapped;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+/**
+ * One provider that speaks OpenAI's `/chat/completions` — Gemini, Groq, Hugging
+ * Face's router, or any other compatible endpoint.
+ */
+const completeOpenAICompatible = async (
+  provider,
+  { system, user, maxTokens, temperature, images, model, feature }
+) => {
   const controller = new AbortController();
   /**
    * Vision calls get their own, longer timeout. A photograph is several thousand
@@ -64,11 +140,19 @@ const complete = async ({
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(`${config.ai.baseUrl}/v1/chat/completions`, {
+    /**
+     * Reasoning models (Gemini 3, Groq's gpt-oss) spend thinking tokens out of
+     * `max_tokens`, so when thinking is on, add headroom so the caller's budget
+     * still covers the answer.
+     */
+    const isGemini = provider.name === "gemini";
+    const thinks = Boolean(provider.reasoningEffort) && provider.reasoningEffort !== "none";
+
+    const response = await fetch(provider.completionsUrl, {
       method: "POST",
       signal: controller.signal,
       headers: {
-        Authorization: `Bearer ${config.ai.apiKey}`,
+        Authorization: `Bearer ${provider.apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
@@ -95,7 +179,8 @@ const complete = async ({
                   ],
           },
         ],
-        max_tokens: maxTokens,
+        max_tokens: thinks ? maxTokens + 2048 : maxTokens,
+        ...(provider.reasoningEffort ? { reasoning_effort: provider.reasoningEffort } : {}),
         /**
          * Low, not zero. This answers questions about someone's money: the same
          * question asked twice should give the same answer, and there is no
@@ -109,7 +194,7 @@ const complete = async ({
       // Body may carry the provider's reason; status alone is rarely enough to
       // tell "out of credit" from "model not found".
       const detail = await response.text().catch(() => "");
-      logger.warn(`[ai] Provider returned ${response.status}: ${detail.slice(0, 300)}`);
+      logger.warn(`[ai] ${provider.name} returned ${response.status}: ${detail.slice(0, 300)}`);
 
       const error = new Error(`AI provider error (${response.status})`);
       /**
@@ -121,7 +206,8 @@ const complete = async ({
        * retry something that cannot succeed, and hides a bill or a typo behind
        * what looks like a blip. 429 and 5xx genuinely are transient.
        */
-      error.permanent = [401, 402, 403, 404].includes(response.status);
+      // Gemini answers a bad key with 400 "API key not valid", not 401.
+      error.permanent = [401, 402, 403, 404, ...(isGemini ? [400] : [])].includes(response.status);
       error.status = response.status;
       throw error;
     }
@@ -175,6 +261,86 @@ const complete = async ({
  * exists on it. Callers use this to hide a camera button rather than offer one
  * that always errors.
  */
-const isVisionConfigured = () => isConfigured() && Boolean(config.ai.visionModel);
+const isVisionConfigured = () => config.ai.chain.some((provider) => provider.visionModel);
+
+/**
+ * Send a chat completion. Returns the assistant's text, or throws a plain Error
+ * whose message is safe to log — never the request body, which contains the
+ * user's financial context.
+ *
+ * Tries each provider in `config.ai.chain` in turn: the primary first, then the
+ * fallbacks (AI_FALLBACK_PROVIDERS), so Gemini hitting its free-tier quota hands
+ * the question to Groq instead of telling the user to wait.
+ */
+const complete = async ({
+  system,
+  user,
+  maxTokens = 500,
+  temperature = 0.2,
+  /**
+   * Data URLs to send alongside the text — a photographed receipt, today.
+   *
+   * A request with images costs several times more and needs a model that can
+   * see (docs/10-AI-ASSISTANT.md §7), so only providers with a vision model are
+   * tried, each with its own — a text model handed a photograph does not error,
+   * it invents a plausible receipt.
+   */
+  images = [],
+  /**
+   * Overrides the primary provider's model. Fallbacks always use their own,
+   * because a model name from one provider means nothing to another.
+   */
+  model,
+  /**
+   * Which capability is spending — `ask`, `draft`, `receipt`, `suggestions`.
+   *
+   * Recorded on the meter so cost is answerable per feature rather than only per
+   * model, which is what a per-use price has to be set from
+   * (docs/22-MONETIZATION.md §1.4). Defaulting to `unknown` rather than being
+   * required, because a caller that forgets should under-label a number, not fail
+   * a user's request.
+   */
+  feature = "unknown",
+} = {}) => {
+  const vision = images.length > 0;
+  const candidates = config.ai.chain.filter((provider) => !vision || provider.visionModel);
+  if (candidates.length === 0) throw new Error("AI is not configured");
+
+  const errors = [];
+  for (const [index, provider] of candidates.entries()) {
+    const ownModel = vision ? provider.visionModel : provider.model;
+    const request = {
+      system,
+      user,
+      maxTokens,
+      temperature,
+      images,
+      model: index === 0 && model ? model : ownModel,
+      feature,
+    };
+
+    try {
+      return provider.kind === "anthropic"
+        ? await completeWithClaude(provider, request)
+        : await completeOpenAICompatible(provider, request);
+    } catch (error) {
+      // A content refusal would be refused again elsewhere — not a provider fault.
+      if (error.message === "AI declined the request") throw error;
+      errors.push(error);
+      const next = candidates[index + 1];
+      if (next) {
+        logger.warn(`[ai] ${provider.name} failed (${error.message}) — falling back to ${next.name}`);
+      }
+    }
+  }
+
+  /**
+   * Every provider failed. Surface the last error, but only call it permanent if
+   * all of them were: one rate-limited provider means waiting can still help.
+   */
+  const last = errors[errors.length - 1];
+  last.permanent = errors.every((error) => error.permanent);
+  throw last;
+};
 
 module.exports = { complete, isConfigured, isVisionConfigured };
