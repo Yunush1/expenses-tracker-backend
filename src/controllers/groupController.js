@@ -45,6 +45,11 @@ exports.archiveGroup = asyncHandler(async (req, res) => {
   return ok(res, { group }, "Group archived");
 });
 
+exports.unarchiveGroup = asyncHandler(async (req, res) => {
+  const group = await groupService.unarchiveGroup({ group: req.group, actor: req.member });
+  return ok(res, { group }, "Group unarchived");
+});
+
 exports.deleteGroup = asyncHandler(async (req, res) => {
   await groupService.deleteGroup({ group: req.group, actor: req.member });
   return ok(res, null, "Group deleted");

@@ -123,6 +123,8 @@ const ACTIVITY_TYPES = Object.freeze({
   GROUP_CREATED: "GROUP_CREATED",
   GROUP_UPDATED: "GROUP_UPDATED",
   GROUP_ARCHIVED: "GROUP_ARCHIVED",
+  /** The undo for an archive — creator only. */
+  GROUP_UNARCHIVED: "GROUP_UNARCHIVED",
   GROUP_RESTORED: "GROUP_RESTORED",
   MEMBER_JOINED: "MEMBER_JOINED",
   MEMBER_ADDED: "MEMBER_ADDED",
@@ -1127,6 +1129,8 @@ const ERROR_CODES = Object.freeze({
   MEMBER_NOT_FOUND: "MEMBER_NOT_FOUND",
   EXPENSE_NOT_FOUND: "EXPENSE_NOT_FOUND",
   GROUP_ARCHIVED: "GROUP_ARCHIVED",
+  /** Unarchive was asked for on a group that is not archived. */
+  GROUP_NOT_ARCHIVED: "GROUP_NOT_ARCHIVED",
   GROUP_DELETED: "GROUP_DELETED",
   /** Restore was asked for on a group that is not deleted. */
   GROUP_NOT_DELETED: "GROUP_NOT_DELETED",

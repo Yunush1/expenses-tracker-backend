@@ -132,6 +132,8 @@ router.patch(
 );
 
 router.post("/:inviteCode/archive", writeLimiter, requireCreator, groupController.archiveGroup);
+// No requireActiveGroup, on purpose: an archived group is the only one this applies to.
+router.post("/:inviteCode/unarchive", writeLimiter, requireCreator, groupController.unarchiveGroup);
 router.delete("/:inviteCode", writeLimiter, requireCreator, groupController.deleteGroup);
 
 /* ----------------------------- Entitlement ------------------------------- */

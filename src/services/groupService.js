@@ -281,7 +281,8 @@ const getPreview = async (group, currentMember) => {
 const getSummary = async (group, currentMember) => {
   const currentMemberId = currentMember?._id ?? null;
 
-  const [members, balanceResult, entitlement, cycle] = await Promise.all([
+  // Same order as the array below — cycle third, entitlement fourth.
+  const [members, balanceResult, cycle, entitlement] = await Promise.all([
     memberRepository.findByGroup(group._id),
     balanceService.computeBalances(group._id),
     /**
@@ -483,6 +484,31 @@ const archiveGroup = async ({ group, actor }) => {
 };
 
 /**
+ * The undo for `archiveGroup` — creator only.
+ *
+ * Archiving is one tap behind a confirm, and before this it had no way back:
+ * a group archived by mistake stayed read-only for good. Nothing is lost while
+ * archived, so returning it to ACTIVE is all an undo needs.
+ */
+const unarchiveGroup = async ({ group, actor }) => {
+  if (group.status !== GROUP_STATUS.ARCHIVED) {
+    throw new ConflictError("This group is not archived", ERROR_CODES.GROUP_NOT_ARCHIVED);
+  }
+
+  const updated = await groupRepository.setStatus(group._id, GROUP_STATUS.ACTIVE);
+
+  await activityService.record({
+    groupId: group._id,
+    type: ACTIVITY_TYPES.GROUP_UNARCHIVED,
+    actor,
+    message: `${actor.name} unarchived the group — it's open for expenses again`,
+    metadata: {},
+  });
+
+  return toGroupDTO(updated);
+};
+
+/**
  * Soft delete — data is retained, every route thereafter returns 410.
  *
  * ## Why the join code is handed back and the invite code is not
@@ -608,6 +634,7 @@ module.exports = {
   lookupByJoinCode,
   updateGroup,
   archiveGroup,
+  unarchiveGroup,
   deleteGroup,
   restoreGroup,
   buildInviteUrl,
