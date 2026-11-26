@@ -1,4 +1,6 @@
+const config = require("../config/env");
 const { toMajor } = require("../utils/money");
+const periodDues = require("../utils/periodDues");
 const { BALANCE_STATUS, SPLIT_TYPES } = require("../constants");
 
 /**
@@ -39,6 +41,18 @@ const toGroupDTO = (group) => ({
   memberCount: group.memberCount,
   createdAt: group.createdAt,
   lastActivityAt: group.lastActivityAt,
+  /**
+   * Monthly or continuous (docs/29-BALANCE-CYCLES.md). Always present: a group
+   * created before cycles reports CONTINUOUS, which is what it has always been,
+   * with `isLegacyCycle` saying it still carries the month edit lock.
+   */
+  balanceCycle: periodDues.cycleOf(group),
+  isLegacyCycle: !group.balanceCycle,
+  startDate: periodDues.dayString(group.startDate),
+  endDate: periodDues.dayString(group.endDate),
+  closedAt: group.closedAt || null,
+  /** Computed, not stored — true from the moment the end date + grace passes. */
+  isClosed: periodDues.isClosed(group, new Date(), config.expensePeriod),
 });
 
 /**
@@ -247,6 +261,17 @@ const toSettlementDTO = (settlement, memberNameById = new Map(), currency = "INR
     amount: toMajor(settlement.amountMinor, currency),
     currencyCode: settlement.currencyCode,
     method: settlement.method,
+    /**
+     * Which months this paid down (monthly groups). Empty elsewhere. A row with a
+     * `pairId` is half of an OFFSET or CARRY_FORWARD — no money moved, and the
+     * client shows the pair as one line rather than two payments.
+     */
+    allocations: (settlement.allocations || []).map((entry) => ({
+      periodKey: entry.periodKey,
+      amountMinor: entry.amountMinor,
+      amount: toMajor(entry.amountMinor, currency),
+    })),
+    pairId: settlement.pairId || null,
     note: settlement.note || "",
     settledAt: settlement.settledAt,
     recordedBy: {

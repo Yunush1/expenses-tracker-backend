@@ -1,6 +1,7 @@
 const cron = require("node-cron");
 const recurringExpenseService = require("../services/recurringExpenseService");
 const receiptCleanupService = require("../services/receiptCleanupService");
+const cycleService = require("../services/cycleService");
 const logger = require("../utils/logger");
 
 /**
@@ -53,6 +54,9 @@ const tick = async () => {
     const results = await Promise.allSettled([
       recurringExpenseService.runDue(),
       receiptCleanupService.run(),
+      // Continuous groups past their end date + grace (docs/29-BALANCE-CYCLES.md).
+      // Only catches the stored state up — writes already read the date.
+      cycleService.closeEndedGroups(),
     ]);
 
     for (const result of results) {

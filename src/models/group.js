@@ -1,5 +1,5 @@
 const mongoose = require("mongoose");
-const { GROUP_STATUS, LIMITS, DEFAULT_CURRENCY } = require("../constants");
+const { GROUP_STATUS, BALANCE_CYCLES, LIMITS, DEFAULT_CURRENCY } = require("../constants");
 
 const groupSchema = new mongoose.Schema(
   {
@@ -100,11 +100,53 @@ const groupSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    /**
+     * Monthly or continuous (docs/29-BALANCE-CYCLES.md).
+     *
+     * **No `default`, on purpose.** Mongoose applies defaults when it hydrates an
+     * old document, so a default here would make every group created before this
+     * field existed claim a cycle it never chose. Absent means "created before
+     * cycles": it reads as CONTINUOUS (its balance is unchanged) and keeps the
+     * month edit lock it always had — see utils/periodDues.js. New groups always
+     * have it written explicitly by groupService.createGroup.
+     */
+    balanceCycle: {
+      type: String,
+      enum: Object.values(BALANCE_CYCLES),
+    },
+    /**
+     * A continuous group's span, as calendar days — stored as UTC midnight of
+     * that day and compared as `YYYY-MM-DD`, never as an instant, so "ends on
+     * 5 October" means the whole of the 5th wherever the group is.
+     *
+     * `startDate` is a label, not a gate: flights booked a month before a trip
+     * are part of the trip. `endDate` is a gate — nothing may be dated after it,
+     * and the group closes itself a grace period later.
+     */
+    startDate: { type: Date, default: null },
+    endDate: { type: Date, default: null },
+    /**
+     * Set when a continuous group is closed, by the creator or by passing its end
+     * date. A closed group still reads, still accepts settlements — the whole
+     * point of closing is that people then pay — and refuses new expenses.
+     *
+     * Separate from `status` rather than a fourth value of it, because ARCHIVED
+     * refuses *every* write, settlements included, and the many `status ===
+     * ACTIVE` checks across the codebase must keep meaning what they mean.
+     */
+    closedAt: { type: Date, default: null },
+    closedByMemberId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Member",
+      default: null,
+    },
   },
   { timestamps: true }
 );
 
 groupSchema.index({ status: 1, lastActivityAt: -1 });
+/** The auto-close sweep: open continuous groups whose end date has passed. */
+groupSchema.index({ balanceCycle: 1, closedAt: 1, endDate: 1 });
 // Partial, not sparse — same reasoning as the expense clientRequestId index: the
 // field defaults to null, and a sparse unique index would reject every group after
 // the first one created without a join code.

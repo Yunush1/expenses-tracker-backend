@@ -341,6 +341,64 @@ const notifyJoinDecision = async ({ group, joinRequest, approved }) => {
   }
 };
 
+/**
+ * A push to named members only — the dues module's requests
+ * (docs/29-BALANCE-CYCLES.md §7).
+ *
+ * `notifyActivity` tells the whole group, which is right for "an expense was
+ * added" and wrong for "A2 asked you for ₹1,000": that is between two people, and
+ * broadcasting it to the flat would turn a reminder into a public notice.
+ *
+ * Same contract as the others: never throws, and the caller does not await it.
+ * A member with no device that ever allowed notifications simply gets nothing —
+ * the request is still waiting for them in the app.
+ */
+const notifyMembers = async ({ group, memberIds, body, type, tag, query = "" }) => {
+  try {
+    if (!isPushEnabled() || !memberIds?.length) return null;
+
+    const wanted = new Set(memberIds.map(String));
+    const members = await memberRepository.findByGroup(group._id);
+    const deviceIds = [
+      ...new Set(
+        members
+          .filter((member) => wanted.has(String(member._id)))
+          .flatMap((member) => [...(member.deviceIds || []), member.deviceId])
+          .filter(Boolean)
+      ),
+    ];
+    if (deviceIds.length === 0) return null;
+
+    const rows = await pushTokenRepository.findByDeviceIds(deviceIds);
+    const tokens = rows.map((row) => row.token).filter(Boolean);
+    if (tokens.length === 0) return null;
+
+    const activity = { _id: "", type, message: body };
+    const messaging = getMessaging();
+    let sent = 0;
+    const dead = [];
+
+    for (const batch of chunk(tokens, FCM_MULTICAST_LIMIT)) {
+      const message = buildMessage({ tokens: batch, group, activity });
+      message.data.url = `${config.appBaseUrl}/g/${group.inviteCode}?tab=settle${query}`;
+      message.data.tag = tag || `${group.inviteCode}:${type}`;
+
+      // eslint-disable-next-line no-await-in-loop -- bounded by FCM_MULTICAST_LIMIT
+      const response = await messaging.sendEachForMulticast(message);
+      sent += response.successCount;
+      response.responses.forEach((result, index) => {
+        if (!result.success && DEAD_TOKEN_CODES.has(result.error?.code)) dead.push(batch[index]);
+      });
+    }
+
+    if (dead.length > 0) await pushTokenRepository.removeByTokens(dead);
+    return { sent };
+  } catch (err) {
+    logger.warn(`[pushService] notifyMembers (${type}) failed: ${err.message}`);
+    return null;
+  }
+};
+
 const unregisterDevice = (deviceId) => pushTokenRepository.removeByDeviceId(deviceId);
 
 /** What this device has switched on. Unregistered devices report the defaults. */
@@ -363,6 +421,7 @@ module.exports = {
   notifyActivity,
   notifyJoinRequest,
   notifyJoinDecision,
+  notifyMembers,
   registerToken,
   unregisterDevice,
   getPreferences,

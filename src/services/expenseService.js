@@ -1,6 +1,8 @@
 const { withTransaction } = require("../config/db");
 const config = require("../config/env");
 const { describeWritability, earliestWritableDate } = require("../utils/expensePeriod");
+const { isClosed, usesMonthLock, dayString } = require("../utils/periodDues");
+const { localDateString } = require("../utils/localTime");
 const groupRepository = require("../repositories/groupRepository");
 const memberRepository = require("../repositories/memberRepository");
 const expenseRepository = require("../repositories/expenseRepository");
@@ -108,8 +110,24 @@ const storedSplitValues = (expense) =>
  * **Settlements deliberately do not pass through this.** Paying an August debt in
  * November is ordinary (docs/14-PERIODS.md §3); locking it would leave a debt the
  * app insists on and refuses to let anyone clear.
+ *
+ * ## Which rule applies depends on the group's cycle (docs/29-BALANCE-CYCLES.md)
+ *
+ *   monthly, and groups created before cycles → the month lock, as always
+ *   continuous                                 → no month lock; refused once the
+ *                                                group is closed, and for any
+ *                                                date after its end date
  */
-const assertPeriodOpen = (date) => {
+const assertPeriodOpen = (group, date) => {
+  const now = new Date();
+
+  if (isClosed(group, now, config.expensePeriod)) {
+    throw new ForbiddenError(
+      "This group is closed — no more expenses. Settle what is left, or ask the creator to reopen it.",
+      ERROR_CODES.GROUP_CLOSED
+    );
+  }
+
   /**
    * An omitted date means today, which is always inside the open month — the
    * service defaults it the same way a few lines below. Passing `undefined`
@@ -122,14 +140,25 @@ const assertPeriodOpen = (date) => {
   const parsed = new Date(date);
   if (Number.isNaN(parsed.getTime())) return; // the validator rejects these first
 
-  const verdict = describeWritability(parsed, new Date(), config.expensePeriod);
+  if (!usesMonthLock(group)) {
+    const end = dayString(group.endDate);
+    if (end && localDateString(parsed, config.expensePeriod.timeZone) > end) {
+      throw new ForbiddenError(
+        `This split ends on ${end}. An expense after that belongs somewhere else.`,
+        ERROR_CODES.EXPENSE_OUTSIDE_PERIOD
+      );
+    }
+    return;
+  }
+
+  const verdict = describeWritability(parsed, now, config.expensePeriod);
   if (verdict.writable) return;
 
   throw new ForbiddenError(verdict.message, ERROR_CODES.PERIOD_LOCKED);
 };
 
 const createExpense = async ({ group, actor, dto }) => {
-  assertPeriodOpen(dto.expenseDate);
+  assertPeriodOpen(group, dto.expenseDate);
 
   // Idempotency: a retried or double-tapped submit returns the original expense
   // rather than charging the group twice.
@@ -232,7 +261,7 @@ const createExpense = async ({ group, actor, dto }) => {
  * in a transaction; on a standalone mongod, validate-first is the guarantee.
  */
 const createExpenseBatch = async ({ group, actor, dto }) => {
-  assertPeriodOpen(dto.expenseDate);
+  assertPeriodOpen(group, dto.expenseDate);
 
   const { paidBy, expenseDate, items } = dto;
   const date = expenseDate || new Date();
@@ -381,8 +410,8 @@ const updateExpense = async ({ group, actor, expenseId, dto }) => {
    * nor moved *into* one. Checking only the new date would let a locked August
    * row be dragged into September and rewritten.
    */
-  assertPeriodOpen(existing.expenseDate);
-  if (dto.expenseDate) assertPeriodOpen(dto.expenseDate);
+  assertPeriodOpen(group, existing.expenseDate);
+  if (dto.expenseDate) assertPeriodOpen(group, dto.expenseDate);
 
   if (existing.version !== dto.version) {
     throw new ConflictError(
@@ -524,7 +553,7 @@ const deleteExpense = async ({ group, actor, expenseId }) => {
   assertCanModify(existing, actor);
   // Deleting is an edit: removing an expense changes the month's total and every
   // balance derived from it.
-  assertPeriodOpen(existing.expenseDate);
+  assertPeriodOpen(group, existing.expenseDate);
 
   const deleted = await expenseRepository.softDelete(group._id, expenseId, actor._id);
 
@@ -618,7 +647,12 @@ const listPeriods = async (group) => {
      * and the refusal arrives on submit — which is the same answer delivered at
      * the most annoying moment.
      */
-    writableFrom: earliestWritableDate(new Date(), config.expensePeriod),
+    writableFrom: usesMonthLock(group) ? earliestWritableDate(new Date(), config.expensePeriod) : null,
+    /**
+     * The ceiling, for a continuous group with an end date — the same courtesy
+     * from the other side (docs/29-BALANCE-CYCLES.md). Null everywhere else.
+     */
+    writableUntil: usesMonthLock(group) ? null : dayString(group.endDate),
   };
 };
 

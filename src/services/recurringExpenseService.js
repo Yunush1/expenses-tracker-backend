@@ -1,3 +1,5 @@
+const { isClosed } = require("../utils/periodDues");
+const config = require("../config/env");
 const recurringExpenseRepository = require("../repositories/recurringExpenseRepository");
 const memberRepository = require("../repositories/memberRepository");
 const groupRepository = require("../repositories/groupRepository");
@@ -535,6 +537,14 @@ const runDue = async (now = new Date()) => {
      * be the one actor able to ignore that.
      */
     if (!group || group.status !== GROUP_STATUS.ACTIVE) continue;
+
+    /**
+     * Nor does a closed continuous group (docs/29-BALANCE-CYCLES.md): closing is
+     * the moment the group stops taking expenses, and rent arriving into a
+     * finished trip would be the scheduler ignoring that too. The templates stay
+     * due, so reopening the group lets them catch up.
+     */
+    if (isClosed(group, now, config.expensePeriod)) continue;
 
     // eslint-disable-next-line no-await-in-loop
     const [entitlement, all] = await Promise.all([

@@ -5,6 +5,10 @@ const memberRepository = require("../repositories/memberRepository");
 const activityService = require("./activityService");
 const balanceService = require("./balanceService");
 const entitlementService = require("./entitlementService");
+const cycleService = require("./cycleService");
+const expenseRepository = require("../repositories/expenseRepository");
+const { cycleOf } = require("../utils/periodDues");
+const { localDateString } = require("../utils/localTime");
 const { generateInviteCode } = require("../utils/inviteCode");
 const { generateJoinCode, normalizeJoinCode, isValidJoinCode } = require("../utils/joinCode");
 const {
@@ -14,7 +18,14 @@ const {
   toPublicMemberDTO,
   toBalanceDTO,
 } = require("../serializers");
-const { ACTIVITY_TYPES, GROUP_STATUS, DEFAULT_CURRENCY, ERROR_CODES, LIMITS } = require("../constants");
+const {
+  ACTIVITY_TYPES,
+  GROUP_STATUS,
+  BALANCE_CYCLES,
+  DEFAULT_CURRENCY,
+  ERROR_CODES,
+  LIMITS,
+} = require("../constants");
 const { ApiError, ConflictError, BadRequestError, NotFoundError } = require("../errors");
 const logger = require("../utils/logger");
 
@@ -142,9 +153,28 @@ const lookupByJoinCode = async (code, deviceId) => {
   };
 };
 
-const createGroup = async ({ name, description, creatorName, deviceId, currency, joinCode }) => {
+const createGroup = async ({
+  name,
+  description,
+  creatorName,
+  deviceId,
+  currency,
+  joinCode,
+  balanceCycle,
+  startDate,
+  endDate,
+}) => {
   const inviteCode = await allocateInviteCode();
   const resolvedJoinCode = await resolveJoinCode(joinCode);
+
+  /**
+   * Always written explicitly — the model has no default on purpose, so that a
+   * missing value keeps meaning "created before cycles" (models/group.js).
+   * Monthly unless the client asked for continuous (PRD §5.1).
+   */
+  const cycle = balanceCycle || BALANCE_CYCLES.MONTHLY;
+  const continuous = cycle === BALANCE_CYCLES.CONTINUOUS;
+  const today = new Date(`${localDateString(new Date(), config.expensePeriod.timeZone)}T00:00:00Z`);
 
   const result = await withTransaction(async (session) => {
     const group = await groupRepository.create(
@@ -158,6 +188,9 @@ const createGroup = async ({ name, description, creatorName, deviceId, currency,
         memberCount: 1,
         status: GROUP_STATUS.ACTIVE,
         lastActivityAt: new Date(),
+        balanceCycle: cycle,
+        startDate: continuous ? startDate || today : null,
+        endDate: continuous ? endDate || null : null,
       },
       session
     );
@@ -248,9 +281,15 @@ const getPreview = async (group, currentMember) => {
 const getSummary = async (group, currentMember) => {
   const currentMemberId = currentMember?._id ?? null;
 
-  const [members, balanceResult, entitlement] = await Promise.all([
+  const [members, balanceResult, entitlement, cycle] = await Promise.all([
     memberRepository.findByGroup(group._id),
     balanceService.computeBalances(group._id),
+    /**
+     * Monthly or continuous, and for a monthly group the viewer's current-month
+     * position and previous dues (docs/29-BALANCE-CYCLES.md) — the two numbers
+     * the PRD's dashboard keeps apart.
+     */
+    cycleService.summaryFor(group, currentMember),
     /**
      * The plan rides along here rather than on an endpoint of its own
      * (docs/22-MONETIZATION.md §6). It is read by every screen that could show a
@@ -271,15 +310,92 @@ const getSummary = async (group, currentMember) => {
     currentMember: currentMember ? toMemberDTO(currentMember, currentMemberId) : null,
     myBalance: myBalance ? toBalanceDTO(myBalance, currentMemberId, group.currency) : null,
     isMember: Boolean(currentMember),
-    isSettled: balanceResult.isSettled,
+    /**
+     * In a monthly group, settled means no open dues in any month. The all-time
+     * figure can be zero while two people each owe the other for different
+     * months — and those are two dues, not none.
+     */
+    isSettled: cycle.hasOpenDues === null ? balanceResult.isSettled : !cycle.hasOpenDues,
+    cycle,
     inviteUrl: buildInviteUrl(group.inviteCode),
   };
 };
 
-const updateGroup = async ({ group, actor, name, description, joinCode, isPrivate }) => {
+/**
+ * Cycle and date changes, folded into `updateGroup`'s patch.
+ *
+ * ## The cycle is fixed once money is in the group
+ *
+ * Turning a group with history into a monthly one would have to say which month
+ * every past payment paid for, and nothing recorded that — so the dues it
+ * produced would show debts people have already paid (docs/29 §9). Switching
+ * the other way would silently merge months people had treated as separate.
+ * Both are allowed only while there is nothing to reinterpret.
+ *
+ * The one exception is a group created before cycles choosing CONTINUOUS
+ * explicitly: its balance already is continuous, so only the month edit lock
+ * changes, and that is the creator's call to make.
+ */
+const applyCycleChanges = async (group, { balanceCycle, startDate, endDate }, update) => {
+  const currentCycle = cycleOf(group);
+  const nextCycle = balanceCycle || currentCycle;
+
+  if (balanceCycle && balanceCycle !== group.balanceCycle) {
+    const legacyToContinuous = !group.balanceCycle && balanceCycle === BALANCE_CYCLES.CONTINUOUS;
+    if (!legacyToContinuous && (await expenseRepository.existsInGroup(group._id))) {
+      throw new ConflictError(
+        "The balance cycle can only be changed before the first expense is added.",
+        ERROR_CODES.CYCLE_LOCKED
+      );
+    }
+    update.balanceCycle = balanceCycle;
+    if (balanceCycle === BALANCE_CYCLES.MONTHLY) {
+      update.startDate = null;
+      update.endDate = null;
+      update.closedAt = null;
+      update.closedByMemberId = null;
+    } else if (!group.startDate) {
+      // The day the group began, not today: a legacy group's history predates this.
+      const began = localDateString(new Date(group.createdAt || Date.now()), config.expensePeriod.timeZone);
+      update.startDate = new Date(`${began}T00:00:00Z`);
+    }
+  }
+
+  if (startDate !== undefined || endDate !== undefined) {
+    if (nextCycle !== BALANCE_CYCLES.CONTINUOUS) {
+      throw new BadRequestError(
+        "Start and end dates are for continuous groups — a monthly group follows the calendar.",
+        ERROR_CODES.NOT_CONTINUOUS
+      );
+    }
+    if (startDate !== undefined) update.startDate = startDate;
+    if (endDate !== undefined) update.endDate = endDate;
+
+    const start = update.startDate !== undefined ? update.startDate : group.startDate;
+    const end = update.endDate !== undefined ? update.endDate : group.endDate;
+    if (start && end && end < start) {
+      throw new BadRequestError("The end date is before the start date", ERROR_CODES.VALIDATION_ERROR);
+    }
+  }
+};
+
+const updateGroup = async ({
+  group,
+  actor,
+  name,
+  description,
+  joinCode,
+  isPrivate,
+  balanceCycle,
+  startDate,
+  endDate,
+}) => {
   const update = {};
   if (name !== undefined) update.name = name;
   if (description !== undefined) update.description = description;
+
+  await applyCycleChanges(group, { balanceCycle, startDate, endDate }, update);
+  const cycleChanged = update.balanceCycle !== undefined;
 
   /**
    * Turning approval on or off.
@@ -332,10 +448,17 @@ const updateGroup = async ({ group, actor, name, description, joinCode, isPrivat
         : `${actor.name} opened the group — anyone with the link can join`
       : joinCodeChange
         ? `${actor.name} ${joinCodeChange} the group's join code`
-        : `${actor.name} updated the group details`,
+        : cycleChanged
+          ? `${actor.name} made this a ${update.balanceCycle === BALANCE_CYCLES.MONTHLY ? "monthly" : "continuous"} split`
+          : `${actor.name} updated the group details`,
     // Never the code itself — the activity feed is readable by every member and a
     // retired code should not stay legible in it.
-    metadata: { name: updated.name, joinCodeChange, privacyChange },
+    metadata: {
+      name: updated.name,
+      joinCodeChange,
+      privacyChange,
+      balanceCycle: cycleChanged ? update.balanceCycle : undefined,
+    },
   });
 
   return toGroupDTO(updated);

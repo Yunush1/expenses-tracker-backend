@@ -55,6 +55,68 @@ const SETTLEMENT_METHODS = Object.freeze({
   UPI: "UPI",
   CASH: "CASH",
   CARD: "CARD",
+  /**
+   * No money moved. Written in mirrored pairs by the dues module
+   * (docs/29-BALANCE-CYCLES.md §6): one row clears debt in one month, its twin
+   * re-creates the same amount in another, so every all-time balance is
+   * unchanged. Never accepted from a client — the settlement validator offers
+   * only PAYMENT_METHODS.
+   *
+   *   OFFSET         two opposite debts between one pair cancel each other
+   *   CARRY_FORWARD  a previous-month due moved into the current month, by
+   *                  agreement of both people
+   */
+  OFFSET: "OFFSET",
+  CARRY_FORWARD: "CARRY_FORWARD",
+});
+
+/** Methods that record a real payment — the only ones a client may send. */
+const PAYMENT_METHODS = Object.freeze(["MANUAL", "UPI", "CASH", "CARD"]);
+
+/**
+ * How a group's balance runs over time (docs/29-BALANCE-CYCLES.md).
+ *
+ *   MONTHLY     every calendar month is its own balance. What is left owing when
+ *               a month ends becomes a *previous due*, kept apart from the new
+ *               month and cleared only by an explicit payment, offset or merge.
+ *   CONTINUOUS  one running balance until the group is closed — a trip, an
+ *               event, a project. This is exactly how every group behaved before
+ *               cycles existed.
+ *
+ * A group with no stored cycle was created before this field existed. It reads as
+ * CONTINUOUS — its balance is unchanged — and keeps the month edit lock it always
+ * had. See utils/periodDues.js `usesMonthLock`.
+ */
+const BALANCE_CYCLES = Object.freeze({
+  MONTHLY: "MONTHLY",
+  CONTINUOUS: "CONTINUOUS",
+});
+
+/**
+ * The two things one member can ask another about a previous due.
+ *
+ *   PAYMENT  the creditor asks the debtor to pay what is owed from earlier
+ *            months. Resolves by itself once that reaches zero.
+ *   MERGE    either side asks to move a previous due into the current month, so
+ *            ordinary spending pays it down instead of a separate transfer. Takes
+ *            effect only when the *other* side accepts.
+ */
+const DUE_REQUEST_KINDS = Object.freeze({
+  PAYMENT: "PAYMENT",
+  MERGE: "MERGE",
+});
+
+const DUE_REQUEST_STATUS = Object.freeze({
+  PENDING: "PENDING",
+  /** MERGE only: the other side agreed and the due was moved. */
+  ACCEPTED: "ACCEPTED",
+  DECLINED: "DECLINED",
+  /** Withdrawn by whoever sent it. */
+  CANCELLED: "CANCELLED",
+  /** PAYMENT only: what was asked for has been paid, offset or merged away. */
+  RESOLVED: "RESOLVED",
+  /** MERGE only: the month it targeted is no longer the current month. */
+  EXPIRED: "EXPIRED",
 });
 
 const ACTIVITY_TYPES = Object.freeze({
@@ -76,6 +138,14 @@ const ACTIVITY_TYPES = Object.freeze({
   EXPENSE_UPDATED: "EXPENSE_UPDATED",
   EXPENSE_DELETED: "EXPENSE_DELETED",
   SETTLEMENT_RECORDED: "SETTLEMENT_RECORDED",
+  /* Balance cycles — docs/29-BALANCE-CYCLES.md */
+  GROUP_CLOSED: "GROUP_CLOSED",
+  GROUP_REOPENED: "GROUP_REOPENED",
+  DUES_OFFSET: "DUES_OFFSET",
+  DUE_MERGED: "DUE_MERGED",
+  DUE_REQUESTED: "DUE_REQUESTED",
+  DUE_REQUEST_DECLINED: "DUE_REQUEST_DECLINED",
+  DUE_REQUEST_CANCELLED: "DUE_REQUEST_CANCELLED",
 });
 
 /**
@@ -1032,6 +1102,24 @@ const ERROR_CODES = Object.freeze({
    * docs/28-SETTLEMENT-DESIGN.md §2.
    */
   PERIOD_LOCKED: "PERIOD_LOCKED",
+  /** A continuous group that has been closed, by hand or by passing its end date. */
+  GROUP_CLOSED: "GROUP_CLOSED",
+  /** Close, reopen and end dates belong to continuous groups only. */
+  NOT_CONTINUOUS: "NOT_CONTINUOUS",
+  /** Dated after a continuous group's end date. */
+  EXPENSE_OUTSIDE_PERIOD: "EXPENSE_OUTSIDE_PERIOD",
+  /** The balance cycle cannot change once a group has expenses in it. */
+  CYCLE_LOCKED: "CYCLE_LOCKED",
+  /** Offsets, merges and due requests exist only in monthly groups. */
+  NOT_MONTHLY: "NOT_MONTHLY",
+  /** An offset, merge or payment request with nothing to act on. */
+  NOTHING_OWED: "NOTHING_OWED",
+  DUE_REQUEST_NOT_FOUND: "DUE_REQUEST_NOT_FOUND",
+  DUE_REQUEST_ALREADY_DECIDED: "DUE_REQUEST_ALREADY_DECIDED",
+  /** One open request of each kind per pair — the existing one is in `details`. */
+  DUE_REQUEST_EXISTS: "DUE_REQUEST_EXISTS",
+  /** Only the person a request is addressed to may answer it. */
+  NOT_REQUEST_RECIPIENT: "NOT_REQUEST_RECIPIENT",
   /** The short code was right, but a member still has to let you in. */
   JOIN_PENDING_APPROVAL: "JOIN_PENDING_APPROVAL",
   JOIN_REQUEST_NOT_FOUND: "JOIN_REQUEST_NOT_FOUND",
@@ -1174,6 +1262,10 @@ module.exports = {
   SPLIT_VALUE_UNITS,
   RECURRENCE,
   SETTLEMENT_METHODS,
+  PAYMENT_METHODS,
+  BALANCE_CYCLES,
+  DUE_REQUEST_KINDS,
+  DUE_REQUEST_STATUS,
   ACTIVITY_TYPES,
   BALANCE_STATUS,
   JOIN_REQUEST_STATUS,

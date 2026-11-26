@@ -4,6 +4,7 @@ const groupController = require("../controllers/groupController");
 const entitlementController = require("../controllers/entitlementController");
 const joinRequestController = require("../controllers/joinRequestController");
 const balanceController = require("../controllers/balanceController");
+const cycleController = require("../controllers/cycleController");
 // Mounted on the group router rather than the expense one: periods describe the
 // group's timeline, and the expense router is scoped under /expenses.
 const expenseController = require("../controllers/expenseController");
@@ -48,6 +49,12 @@ const {
 const { listActivitiesQuery } = require("../validators/activityValidators");
 const { categoryBreakdownQuery, exportQuery } = require("../validators/analyticsValidators");
 const { balancesQuery } = require("../validators/balanceValidators");
+const {
+  offsetSchema,
+  createDueRequestSchema,
+  respondDueRequestSchema,
+  reopenSchema,
+} = require("../validators/dueValidators");
 
 const router = express.Router();
 
@@ -174,6 +181,62 @@ router.get(
  * years instead of one per month (docs/14-PERIODS.md).
  */
 router.get("/:inviteCode/periods", expenseController.listPeriods);
+
+/* --------------------------- Balance cycles ------------------------------ */
+
+/**
+ * Monthly and continuous splits, previous dues, and the requests members send
+ * each other about them (docs/29-BALANCE-CYCLES.md).
+ *
+ * Reads are open like every other derived read — anyone holding the link can
+ * already see each expense these figures are built from. Writes need a member,
+ * and an active (not archived) group. A *closed* group still accepts offsets,
+ * merges and payments: closing stops expenses, and settling up is the point of
+ * it.
+ */
+router.get("/:inviteCode/cycle", cycleController.getCycle);
+
+router.post("/:inviteCode/close", writeLimiter, requireActiveGroup, requireCreator, cycleController.closeGroup);
+
+router.post(
+  "/:inviteCode/reopen",
+  writeLimiter,
+  requireActiveGroup,
+  requireCreator,
+  validate(reopenSchema),
+  cycleController.reopenGroup
+);
+
+router.get("/:inviteCode/dues", cycleController.getDues);
+
+router.post(
+  "/:inviteCode/dues/offset",
+  writeLimiter,
+  requireActiveGroup,
+  requireMember,
+  validate(offsetSchema),
+  cycleController.offsetDues
+);
+
+router.get("/:inviteCode/dues/requests", requireMember, cycleController.listRequests);
+
+router.post(
+  "/:inviteCode/dues/requests",
+  writeLimiter,
+  requireActiveGroup,
+  requireMember,
+  validate(createDueRequestSchema),
+  cycleController.createRequest
+);
+
+router.post(
+  "/:inviteCode/dues/requests/:requestId",
+  writeLimiter,
+  requireActiveGroup,
+  requireMember,
+  validate(respondDueRequestSchema),
+  cycleController.respondToRequest
+);
 
 router.get(
   "/:inviteCode/activities",

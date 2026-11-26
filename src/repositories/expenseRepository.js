@@ -264,6 +264,51 @@ const aggregateTotals = (groupId, { from, to } = {}) => {
 };
 
 /**
+ * Every share as a debt, grouped by month: "in 2026-09, member X owes payer Y
+ * this much" (docs/29-BALANCE-CYCLES.md §3).
+ *
+ * The input to utils/periodDues.buildDues. Grouped here rather than in Node so a
+ * group with years of history sends back one row per (month, pair) instead of
+ * every expense it ever had.
+ *
+ * Months are cut in the **configured zone**, not UTC — unlike `periods` below.
+ * That matters here and not there: these figures are what people are asked to
+ * pay, and the month edit lock that freezes them closes in that same zone. A
+ * dinner at 23:30 on 30 September in Mumbai belongs to September's dues.
+ *
+ * A payer's own share is excluded: it is money they spent on themselves, not a
+ * debt to anybody.
+ */
+const pairDebtsByMonth = (groupId, timeZone) =>
+  Expense.aggregate([
+    { $match: { groupId: new mongoose.Types.ObjectId(String(groupId)), isDeleted: false } },
+    { $unwind: "$shares" },
+    { $match: { $expr: { $ne: ["$shares.memberId", "$paidBy"] } } },
+    {
+      $group: {
+        _id: {
+          periodKey: { $dateToString: { format: "%Y-%m", date: "$expenseDate", timezone: timeZone } },
+          fromMemberId: "$shares.memberId",
+          toMemberId: "$paidBy",
+        },
+        amountMinor: { $sum: "$shares.amountMinor" },
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        periodKey: "$_id.periodKey",
+        fromMemberId: { $toString: "$_id.fromMemberId" },
+        toMemberId: { $toString: "$_id.toMemberId" },
+        amountMinor: 1,
+      },
+    },
+  ]);
+
+/** Does this group have any live expense? Decides whether its cycle may still change. */
+const existsInGroup = (groupId) => Expense.exists({ groupId, isDeleted: false });
+
+/**
  * Which months and years this group actually has expenses in.
  *
  * ## Why the server decides which periods exist
@@ -433,6 +478,8 @@ module.exports = {
   countByGroup,
   countInvolvingMember,
   aggregateTotals,
+  pairDebtsByMonth,
+  existsInGroup,
   periods,
   categoryTotals,
   listAllByGroup,

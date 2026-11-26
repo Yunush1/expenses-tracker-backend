@@ -4,6 +4,19 @@ const { decodeCursor } = require("../utils/cursor");
 
 const create = (payload) => Settlement.create(payload);
 
+/**
+ * The two halves of an OFFSET or CARRY_FORWARD, written together.
+ *
+ * `create` rather than `insertMany` because insertMany skips save middleware, and
+ * the allocation-balance assertion on the model is the last line before a month's
+ * dues disagree with the all-time balance. `ordered` because Mongoose refuses to
+ * save several documents in parallel inside one transaction.
+ */
+const createPair = (payloads, session = null) =>
+  Settlement.create(payloads, { ordered: true, ...(session ? { session } : {}) });
+
+const deleteByPairId = (groupId, pairId) => Settlement.deleteMany({ groupId, pairId });
+
 const findByClientRequestId = (groupId, clientRequestId) => {
   if (!clientRequestId) return Promise.resolve(null);
   return Settlement.findOne({ groupId, clientRequestId }).lean();
@@ -93,6 +106,8 @@ const deleteByGroup = (groupId, session = null) => Settlement.deleteMany({ group
 
 module.exports = {
   create,
+  createPair,
+  deleteByPairId,
   findByClientRequestId,
   listByGroup,
   listAllByGroup,

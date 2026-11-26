@@ -70,7 +70,32 @@ const setStatus = (id, status) =>
 
 const deleteHard = (id, session = null) => Group.deleteOne({ _id: id }, { session });
 
+/**
+ * Close a continuous group — only if it is still open, so the creator's button
+ * and the end-date sweep cannot both "close" it and both log that they did.
+ * Returns the updated group, or null if it was already closed.
+ */
+const closeIfOpen = (id, closedByMemberId = null) =>
+  Group.findOneAndUpdate(
+    { _id: id, closedAt: null },
+    { $set: { closedAt: new Date(), closedByMemberId, lastActivityAt: new Date() } },
+    { new: true }
+  );
+
+/** Open continuous groups whose end date is before `cutoff` — the auto-close sweep. */
+const findEndedOpenTrips = (cutoff, limit = 200) =>
+  Group.find({
+    balanceCycle: "CONTINUOUS",
+    closedAt: null,
+    status: GROUP_STATUS.ACTIVE,
+    endDate: { $ne: null, $lt: cutoff },
+  })
+    .limit(limit)
+    .lean();
+
 module.exports = {
+  closeIfOpen,
+  findEndedOpenTrips,
   create,
   findByInviteCode,
   findById,
