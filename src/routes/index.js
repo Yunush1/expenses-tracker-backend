@@ -10,6 +10,7 @@ const sheetRoutes = require("./sheetRoutes");
 const blogRoutes = require("./blogRoutes");
 const rateRoutes = require("./rateRoutes");
 const shareLinkRoutes = require("./shareLinkRoutes");
+const statsRoutes = require("./statsRoutes");
 
 const router = express.Router();
 
@@ -72,5 +73,7 @@ router.use("/sheets", sheetRoutes);
  * inside the router, keyed off the `ADMIN_EMAILS` allowlist.
  */
 router.use("/blog", blogRoutes);
+// Site visits (public beacon) and the operator's visitors & usage overview.
+router.use("/stats", statsRoutes);
 
 module.exports = router;

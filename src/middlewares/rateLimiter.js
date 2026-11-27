@@ -225,7 +225,18 @@ const shareLinkLimiter = lazy(() =>
   )
 );
 
+/**
+ * The site's page-view beacon (routes/statsRoutes.js). Generous for a person —
+ * a visitor reading forty pages in a quarter of an hour is still counted — and
+ * small enough that nobody can inflate the numbers or fill the collection from
+ * one network.
+ */
+const visitLimiter = lazy(() =>
+  build("visit", 15 * 60 * 1000, 60, "Too many requests. Please slow down.")
+);
+
 module.exports = {
+  visitLimiter,
   globalLimiter,
   networkLimiter,
   createGroupLimiter,
